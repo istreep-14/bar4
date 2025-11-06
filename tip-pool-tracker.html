@@ -343,6 +343,12 @@
                 try {
                     await sheetsAPI.initialize(cfg.clientId, cfg.apiKey);
                     console.log('Google API initialized');
+                    if (typeof gapi !== 'undefined' && gapi?.client?.getToken) {
+                        const token = gapi.client.getToken();
+                        if (token) {
+                            setIsAuthenticated(true);
+                        }
+                    }
                 } catch (error) {
                     setError('Failed to initialize Google API: ' + error.message);
                 }
@@ -355,7 +361,6 @@
                     const success = await sheetsAPI.requestAccessToken();
                     if (success) {
                         setIsAuthenticated(true);
-                        await loadShifts();
                     } else {
                         setError('Authentication failed');
                     }
@@ -394,6 +399,11 @@
                     setLoading(false);
                 }
             };
+
+            useEffect(() => {
+                if (!isAuthenticated || !config.spreadsheetId) return;
+                loadShifts();
+            }, [isAuthenticated, config.spreadsheetId, config.sheetName]);
 
             const saveShift = async (shiftData) => {
                 if (!config.spreadsheetId || !isAuthenticated) return;
@@ -1091,15 +1101,25 @@
                 day: 'from-yellow-400 to-orange-500',
                 night: 'from-indigo-500 to-purple-600',
                 double: 'from-pink-500 to-red-500',
+                default: 'from-slate-700 to-slate-900',
             };
+            const gradient = shiftTypeColors[data.type] || shiftTypeColors.default;
+
+            const toNumber = (value) => {
+                if (typeof value === 'number') return value;
+                const num = parseFloat(value);
+                return Number.isNaN(num) ? 0 : num;
+            };
+
+            const shiftLabel = data.type ? `${data.type.charAt(0).toUpperCase() + data.type.slice(1)} Shift` : 'Unassigned Shift';
 
             return (
                 <div className="glass rounded-xl shadow-lg overflow-hidden card-hover border border-slate-800/40">
-                    <div className={`bg-gradient-to-r ${shiftTypeColors[data.type]} p-4`}>
+                    <div className={`bg-gradient-to-r ${gradient} p-4`}>
                         <div className="flex items-center justify-between">
                             <div className="text-white">
                                 <p className="text-sm opacity-80">{new Date(data.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</p>
-                                <p className="text-2xl font-semibold">{data.type.charAt(0).toUpperCase() + data.type.slice(1)} Shift</p>
+                                <p className="text-2xl font-semibold">{shiftLabel}</p>
                             </div>
                             <div className="bg-white/20 px-3 py-1 rounded-full">
                                 <p className="text-white text-sm font-semibold">{data.myName}</p>
@@ -1111,28 +1131,28 @@
                         <div className="flex justify-between items-center">
                             <span className="text-slate-400 text-sm">Total Earnings</span>
                             <span className="text-xl font-bold text-emerald-300">
-                                ${(data.earnings?.total || 0).toFixed(2)}
+                                ${toNumber(data.earnings?.total || 0).toFixed(2)}
                             </span>
                         </div>
 
                         <div className="flex justify-between items-center">
                             <span className="text-slate-400 text-sm">Hours Worked</span>
                             <span className="font-semibold text-slate-100">
-                                {(data.summary?.hours || 0).toFixed(1)}h
+                                {(toNumber(data.summary?.hours || 0)).toFixed(1)}h
                             </span>
                         </div>
 
                         <div className="flex justify-between items-center">
                             <span className="text-slate-400 text-sm">Hourly Rate</span>
                             <span className="font-semibold text-slate-100">
-                                ${(data.summary?.hourly || 0).toFixed(2)}/hr
+                                ${toNumber(data.summary?.hourly || 0).toFixed(2)}/hr
                             </span>
                         </div>
 
                         <div className="flex justify-between items-center pt-2 border-t border-slate-800/60">
                             <span className="text-slate-400 text-sm">Tips</span>
                             <span className="font-semibold text-cyan-300">
-                                ${(data.tips?._total || 0).toFixed(2)}
+                                ${toNumber(data.tips?._total || 0).toFixed(2)}
                             </span>
                         </div>
 
@@ -1182,7 +1202,7 @@
         const DEFAULT_SHIFT_TEMPLATE = {
             id: '',
             date: new Date().toISOString().split('T')[0],
-            type: 'night',
+            type: '',
             myName: '',
             time: {
                 base: { start: '', end: '', hours: 0 },
@@ -1254,6 +1274,61 @@
             return merge(clone, override);
         }
 
+        function setNestedValue(target, path, value) {
+            const keys = path.split('.');
+            let cursor = target;
+            for (let i = 0; i < keys.length - 1; i += 1) {
+                const key = keys[i];
+                if (!cursor[key] || typeof cursor[key] !== 'object') {
+                    cursor[key] = {};
+                }
+                cursor = cursor[key];
+            }
+            cursor[keys[keys.length - 1]] = value;
+        }
+
+        function getNestedValue(target, path) {
+            const keys = path.split('.');
+            let cursor = target;
+            for (let i = 0; i < keys.length; i += 1) {
+                if (!cursor) return undefined;
+                cursor = cursor[keys[i]];
+            }
+            return cursor;
+        }
+
+        function buildInitialTimeDrafts(data = {}) {
+            const drafts = {
+                base: {
+                    start: formatTimeDisplay(data?.time?.base?.start),
+                    end: formatTimeDisplay(data?.time?.base?.end),
+                },
+                buckets: {},
+                parties: {},
+                wage: {
+                    start: formatTimeDisplay(data?.wage?.clock?.start),
+                    end: formatTimeDisplay(data?.wage?.clock?.end),
+                },
+            };
+
+            ['present', 'clock', 'tips', 'working'].forEach((bucket) => {
+                const bucketData = data?.time?.[bucket];
+                drafts.buckets[bucket] = {
+                    start: formatTimeDisplay(bucketData?.start),
+                    end: formatTimeDisplay(bucketData?.end),
+                };
+            });
+
+            Object.entries(data?.parties || {}).forEach(([id, party]) => {
+                drafts.parties[id] = {
+                    start: formatTimeDisplay(party?.time?.start),
+                    end: formatTimeDisplay(party?.time?.end),
+                };
+            });
+
+            return drafts;
+        }
+
         function calculateHoursBetween(start, end) {
             if (!start || !end) return 0;
             const [startHour, startMin] = start.split(':').map(Number);
@@ -1263,18 +1338,275 @@
             return Math.round(hours * 100) / 100;
         }
 
+        const MINUTES_IN_DAY = 24 * 60;
+
+        function timeStringToMinutes(time) {
+            if (!time || typeof time !== 'string' || !time.includes(':')) return null;
+            const [hourStr, minuteStr] = time.split(':');
+            const hour = parseInt(hourStr, 10);
+            const minutes = parseInt(minuteStr, 10);
+            if (Number.isNaN(hour) || Number.isNaN(minutes)) return null;
+            return (hour % 24) * 60 + minutes;
+        }
+
+        function normalizeMinutesDiff(startMinutes, endMinutes) {
+            if (startMinutes == null || endMinutes == null) return null;
+            let diff = endMinutes - startMinutes;
+            if (diff <= 0) diff += MINUTES_IN_DAY;
+            return diff;
+        }
+
+        function formatTimeDisplay(time24) {
+            if (!time24 || typeof time24 !== 'string' || !time24.includes(':')) return '';
+            const [hourStr, minuteStr] = time24.split(':');
+            const hour = parseInt(hourStr, 10);
+            const minute = parseInt(minuteStr, 10);
+            if (Number.isNaN(hour) || Number.isNaN(minute)) return '';
+            const period = hour >= 12 ? 'PM' : 'AM';
+            const displayHour = hour % 12 === 0 ? 12 : hour % 12;
+            return `${displayHour}:${minute.toString().padStart(2, '0')} ${period}`;
+        }
+
+        function parseFlexibleTime(rawInput, { mode = 'general', referenceStart = null, defaultPeriod = null } = {}) {
+            const raw = typeof rawInput === 'number' ? rawInput.toString() : (rawInput || '').toString();
+            const trimmed = raw.trim();
+
+            if (trimmed === '') {
+                return { ok: true, normalized: '', display: '', period: null, raw: '' };
+            }
+
+            let working = trimmed.toLowerCase().replace(/\s+/g, '');
+            let explicitPeriod = null;
+
+            if (/(am|a)$/.test(working)) {
+                explicitPeriod = 'am';
+                working = working.replace(/(am|a)$/, '');
+            } else if (/(pm|p)$/.test(working)) {
+                explicitPeriod = 'pm';
+                working = working.replace(/(pm|p)$/, '');
+            }
+
+            let hour = null;
+            let minute = null;
+
+            if (working.includes(':')) {
+                const [hourPart, minutePartRaw] = working.split(':');
+                hour = parseInt(hourPart, 10);
+                const minutePart = (minutePartRaw || '').replace(/[^\d]/g, '').slice(0, 2);
+                minute = minutePart ? parseInt(minutePart, 10) : 0;
+            } else {
+                const digits = working.replace(/[^\d]/g, '');
+                if (!digits) {
+                    return { ok: false, reason: 'no-digits' };
+                }
+                if (digits.length <= 2) {
+                    hour = parseInt(digits, 10);
+                    minute = 0;
+                } else if (digits.length === 3) {
+                    hour = parseInt(digits.slice(0, 1), 10);
+                    minute = parseInt(digits.slice(1), 10);
+                } else {
+                    hour = parseInt(digits.slice(0, digits.length - 2), 10);
+                    minute = parseInt(digits.slice(-2), 10);
+                }
+            }
+
+            if (
+                Number.isNaN(hour) ||
+                Number.isNaN(minute) ||
+                hour < 0 ||
+                minute < 0 ||
+                minute >= 60 ||
+                hour > 24
+            ) {
+                return { ok: false, reason: 'invalid-range' };
+            }
+
+            if (hour === 24) {
+                hour = 0;
+                explicitPeriod = 'am';
+            }
+
+            const periodFromExplicit = explicitPeriod ? explicitPeriod : null;
+
+            const minuteComponent = minute;
+            const isExplicitMilitary =
+                hour >= 13 ||
+                (working.includes(':') && working.startsWith('0')) ||
+                (working.length === 4 && parseInt(working.slice(0, 2), 10) >= 13) ||
+                (working.length === 4 && parseInt(working.slice(0, 2), 10) === 0);
+
+            const evaluateEndCandidate = (candidates, referenceMinutes) => {
+                if (!candidates.length) return null;
+                if (referenceMinutes == null) return candidates[0].hour24;
+
+                const maxDuration = 12 * 60;
+                let best = null;
+                candidates.forEach((candidate) => {
+                    const candidateMinutes = candidate.hour24 * 60 + minuteComponent;
+                    let diff = candidateMinutes - referenceMinutes;
+                    if (diff <= 0) diff += MINUTES_IN_DAY;
+                    const withinWindow = diff > 0 && diff <= maxDuration;
+                    if (withinWindow) {
+                        if (!best || diff < best.diff) {
+                            best = { hour24: candidate.hour24, diff };
+                        }
+                    }
+                });
+                if (best) return best.hour24;
+
+                // fall back to closest positive duration when all candidates exceed 12 hours
+               let fallback = null;
+                candidates.forEach((candidate) => {
+                    const candidateMinutes = candidate.hour24 * 60 + minuteComponent;
+                    let diff = candidateMinutes - referenceMinutes;
+                    if (diff <= 0) diff += MINUTES_IN_DAY;
+                    if (!fallback || diff < fallback.diff) {
+                        fallback = { hour24: candidate.hour24, diff };
+                    }
+                });
+                return fallback ? fallback.hour24 : candidates[0].hour24;
+            };
+
+            let hour24 = 0;
+            let resolvedPeriod = periodFromExplicit;
+
+            if (mode === 'end') {
+                const baseHour = hour % 12;
+                const amHour = baseHour === 12 ? 0 : baseHour;
+                const pmHour = baseHour === 12 ? 12 : baseHour + 12;
+                const candidates = [];
+
+                if (isExplicitMilitary) {
+                    candidates.push({ hour24: hour % 24 });
+                    resolvedPeriod = hour % 24 >= 12 ? 'pm' : 'am';
+                } else if (resolvedPeriod === 'am') {
+                    candidates.push({ hour24: amHour });
+                } else if (resolvedPeriod === 'pm') {
+                    candidates.push({ hour24: pmHour });
+                } else {
+                    if (!candidates.some((c) => c.hour24 === pmHour)) {
+                        candidates.push({ hour24: pmHour });
+                    }
+                    if (!candidates.some((c) => c.hour24 === amHour)) {
+                        candidates.push({ hour24: amHour });
+                    }
+                }
+
+                const referenceMinutes = referenceStart ? timeStringToMinutes(referenceStart) : null;
+                hour24 = evaluateEndCandidate(candidates, referenceMinutes);
+                resolvedPeriod = hour24 >= 12 ? 'pm' : 'am';
+            } else if (isExplicitMilitary) {
+                hour24 = hour % 24;
+                resolvedPeriod = hour24 >= 12 ? 'pm' : 'am';
+            } else {
+                if (!resolvedPeriod) {
+                    if (mode === 'start') {
+                        if (hour >= 10 && hour <= 11) {
+                            resolvedPeriod = 'am';
+                        } else {
+                            resolvedPeriod = 'pm';
+                        }
+                    } else if (defaultPeriod) {
+                        resolvedPeriod = defaultPeriod;
+                    } else if (hour >= 10 && hour <= 11) {
+                        resolvedPeriod = 'am';
+                    } else {
+                        resolvedPeriod = 'pm';
+                    }
+                }
+
+                const baseHour = hour % 12;
+                hour24 = baseHour;
+                if (resolvedPeriod === 'pm' && hour24 < 12) {
+                    hour24 += 12;
+                }
+                if (resolvedPeriod === 'am' && hour24 === 12) {
+                    hour24 = 0;
+                }
+            }
+
+            const normalized = `${hour24.toString().padStart(2, '0')}:${minuteComponent
+                .toString()
+                .padStart(2, '0')}`;
+            return {
+                ok: true,
+                normalized,
+                display: formatTimeDisplay(normalized),
+                period: resolvedPeriod,
+                raw: trimmed,
+            };
+        }
+
+        function inferShiftTypeFromTimes(startTime, endTime) {
+            if (!startTime) return '';
+            const startMinutes = timeStringToMinutes(startTime);
+            if (startMinutes == null) return '';
+            const endMinutes = timeStringToMinutes(endTime);
+            const duration = endMinutes != null ? normalizeMinutesDiff(startMinutes, endMinutes) : null;
+
+            const dayStartMin = 10 * 60;
+            const dayEndMax = 19 * 60 + 30; // 7:30 PM safety net
+            const nightThreshold = 16 * 60; // 4:00 PM
+
+            if (startMinutes >= nightThreshold || startMinutes < dayStartMin) {
+                return 'night';
+            }
+
+            if (startMinutes >= dayStartMin && startMinutes <= 13 * 60) {
+                if (!duration || duration <= 9 * 60) {
+                    if (!endTime || timeStringToMinutes(endTime) <= dayEndMax) {
+                        return 'day';
+                    }
+                }
+            }
+
+            if (startMinutes >= 13 * 60 && startMinutes <= nightThreshold) {
+                if (endMinutes != null) {
+                    const endWithinDay = endMinutes <= dayEndMax;
+                    if (endWithinDay && (!duration || duration <= 8 * 60)) {
+                        return 'day';
+                    }
+                }
+            }
+
+            return 'night';
+        }
+
         function ensureCutSkeleton(type, parties, existingCuts) {
-            const baseCuts = type === 'day' ? ['day', 'mid'] : type === 'night' ? ['night'] : ['day', 'mid', 'night'];
-            const partyKeys = Object.keys(parties || {});
-            const requiredKeys = [...new Set([...baseCuts, ...partyKeys])];
-            const cuts = { ...existingCuts };
+            const normalizedParties = parties || {};
+            const baseCutSet =
+                type === 'day'
+                    ? new Set(['day', 'mid', 'night'])
+                    : type === 'night'
+                        ? new Set(['night', 'mid'])
+                        : new Set(['day', 'mid', 'night']);
+
+            baseCutSet.add('night'); // night cut is always available
+
+            const requiredPartyCuts = Object.entries(normalizedParties)
+                .filter(([, party]) => (party?.cutType || type || 'night') !== 'night')
+                .map(([id]) => id);
+
+            const requiredKeys = [...baseCutSet, ...requiredPartyCuts];
+            const cuts = { ...(existingCuts || {}) };
             let changed = false;
+
+            Object.keys(cuts).forEach((key) => {
+                const isPartyCut = key.startsWith('party_');
+                if (isPartyCut && !requiredPartyCuts.includes(key)) {
+                    delete cuts[key];
+                    changed = true;
+                }
+            });
 
             requiredKeys.forEach((key) => {
                 if (!cuts[key]) {
                     changed = true;
                     cuts[key] = {
-                        label: key.startsWith('party_') ? (parties?.[key]?.name || 'Party Cut') : key.charAt(0).toUpperCase() + key.slice(1),
+                        label: key.startsWith('party_')
+                            ? normalizedParties?.[key]?.name || 'Party Cut'
+                            : key.charAt(0).toUpperCase() + key.slice(1),
                         me: { tips: '', hours: '' },
                         total: { tips: '', hours: '' },
                         share: { pct: '', people: '', notes: '' },
@@ -1297,10 +1629,39 @@
                 enhancements: false,
                 drinking: false,
             });
+            const [timeDrafts, setTimeDrafts] = useState(() => buildInitialTimeDrafts(shift || DEFAULT_SHIFT_TEMPLATE));
+            const [timeErrors, setTimeErrors] = useState({});
+            const [shiftTypeMode, setShiftTypeMode] = useState(shift?.type ? 'manual' : 'auto');
+            const [shiftTypeMenuOpen, setShiftTypeMenuOpen] = useState(false);
+            const [expandedCuts, setExpandedCuts] = useState({});
+            const [cutSnapshots, setCutSnapshots] = useState({});
+            const [expandedParties, setExpandedParties] = useState({});
+            const [partySnapshots, setPartySnapshots] = useState({});
+            const shiftTypeDropdownRef = useRef(null);
 
             useEffect(() => {
-                setFormData(deepMergeShift(DEFAULT_SHIFT_TEMPLATE, shift));
+                const merged = deepMergeShift(DEFAULT_SHIFT_TEMPLATE, shift);
+                setFormData(merged);
+                setTimeDrafts(buildInitialTimeDrafts(merged));
+                setTimeErrors({});
+                setShiftTypeMode(shift?.type ? 'manual' : 'auto');
+                setShiftTypeMenuOpen(false);
+                setExpandedCuts({});
+                setCutSnapshots({});
+                setExpandedParties({});
+                setPartySnapshots({});
             }, [shift]);
+
+            useEffect(() => {
+                if (!shiftTypeMenuOpen) return undefined;
+                const handleClickAway = (event) => {
+                    if (shiftTypeDropdownRef.current && !shiftTypeDropdownRef.current.contains(event.target)) {
+                        setShiftTypeMenuOpen(false);
+                    }
+                };
+                document.addEventListener('mousedown', handleClickAway);
+                return () => document.removeEventListener('mousedown', handleClickAway);
+            }, [shiftTypeMenuOpen]);
 
             useEffect(() => {
                 setFormData((prev) => {
@@ -1317,65 +1678,176 @@
             const updateFormPath = (path, value) => {
                 setFormData((prev) => {
                     const next = JSON.parse(JSON.stringify(prev));
-                    const keys = path.split('.');
-                    let cursor = next;
-                    for (let i = 0; i < keys.length - 1; i += 1) {
-                        const key = keys[i];
-                        if (!cursor[key] || typeof cursor[key] !== 'object') {
-                            cursor[key] = {};
-                        }
-                        cursor = cursor[key];
-                    }
-                    cursor[keys[keys.length - 1]] = value;
+                    setNestedValue(next, path, value);
                     return next;
                 });
             };
 
-            const handlePrimaryTimeChange = (field, value) => {
-                setFormData((prev) => {
+            const mapFormPathToDraft = (path) => {
+                if (path.startsWith('time.base.')) {
+                    return path.replace('time.base.', 'base.');
+                }
+                if (path.startsWith('time.')) {
+                    const [, bucket, key] = path.split('.');
+                    return `buckets.${bucket}.${key}`;
+                }
+                if (path.startsWith('parties.') && path.includes('.time.')) {
+                    return path.replace(/parties\.([^.]+)\.time\./, 'parties.$1.');
+                }
+                if (path.startsWith('wage.clock.')) {
+                    return path.replace('wage.clock.', 'wage.');
+                }
+                return path;
+            };
+
+            const getTimeDraftValue = (formPath) => {
+                const draftPath = mapFormPathToDraft(formPath);
+                const draftValue = getNestedValue(timeDrafts, draftPath);
+                if (draftValue !== undefined) {
+                    return draftValue ?? '';
+                }
+                const persisted = getNestedValue(formData, formPath);
+                return formatTimeDisplay(persisted);
+            };
+
+            const handleTimeDraftChange = (formPath, value) => {
+                const draftPath = mapFormPathToDraft(formPath);
+                setTimeDrafts((prev) => {
                     const next = JSON.parse(JSON.stringify(prev));
-                    next.time.base[field] = value;
-                    if (next.time.base.start && next.time.base.end) {
-                        const hours = calculateHoursBetween(next.time.base.start, next.time.base.end);
-                        next.time.base.hours = hours;
-                        next.wage.hours = hours;
-                        next.wage.total = parseFloat((next.wage.base * hours).toFixed(2));
-                        next.summary.hours = hours;
-                    }
+                    setNestedValue(next, draftPath, value);
                     return next;
                 });
             };
+
+            const commitTimeValue = (formPath, rawValue, options = {}) => {
+                const draftPath = mapFormPathToDraft(formPath);
+                const parsed = parseFlexibleTime(rawValue, options);
+                if (!parsed.ok) {
+                    setTimeErrors((prev) => ({
+                        ...prev,
+                        [formPath]: 'Unable to read time',
+                    }));
+                    setTimeDrafts((prev) => {
+                        const next = JSON.parse(JSON.stringify(prev));
+                        setNestedValue(next, draftPath, rawValue || '');
+                        return next;
+                    });
+                    return null;
+                }
+
+                setTimeErrors((prev) => {
+                    if (!prev[formPath]) return prev;
+                    const next = { ...prev };
+                    delete next[formPath];
+                    return next;
+                });
+
+                setTimeDrafts((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    setNestedValue(next, draftPath, parsed.display || '');
+                    return next;
+                });
+
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    setNestedValue(next, formPath, parsed.normalized);
+
+                    if (formPath.startsWith('time.base.')) {
+                        const start = formPath === 'time.base.start' ? parsed.normalized : next.time.base.start;
+                        const end = formPath === 'time.base.end' ? parsed.normalized : next.time.base.end;
+                        if (start && end) {
+                            const hours = calculateHoursBetween(start, end);
+                            next.time.base.hours = hours;
+                            next.wage.hours = hours;
+                            const wageRate = parseFloat(next.wage.base) || 0;
+                            next.wage.total = parseFloat((wageRate * hours).toFixed(2));
+                            next.summary.hours = hours;
+                        }
+                    }
+
+                    if (formPath.startsWith('wage.clock.')) {
+                        next.wage.clock = next.wage.clock || { start: '', end: '' };
+                    }
+
+                    const partyMatch = formPath.match(/^parties\.([^.]+)\.time\.(start|end)$/);
+                    if (partyMatch) {
+                        const [, partyId] = partyMatch;
+                        const party = next.parties?.[partyId];
+                        if (party) {
+                            const start = party.time?.start;
+                            const end = party.time?.end;
+                            if (start && end) {
+                                party.time.duration = calculateHoursBetween(start, end);
+                            } else if (party.time) {
+                                delete party.time.duration;
+                            }
+                        }
+                    }
+
+                    return next;
+                });
+
+                return parsed;
+            };
+
+            const parseAmount = (value, fallback = 0) => {
+                if (value === '' || value === null || value === undefined) return fallback;
+                const numeric = typeof value === 'number' ? value : parseFloat(value);
+                if (Number.isNaN(numeric)) return fallback;
+                return numeric;
+            };
+
+            useEffect(() => {
+                if (shiftTypeMode !== 'auto') return;
+                const start = formData.time?.base?.start;
+                if (!start) return;
+                const inferred = inferShiftTypeFromTimes(start, formData.time?.base?.end);
+                if (inferred && inferred !== formData.type) {
+                    setFormData((prev) => ({ ...prev, type: inferred }));
+                }
+            }, [formData.time?.base?.start, formData.time?.base?.end, shiftTypeMode]);
 
             const handleTipsChange = (value) => {
-                const tipsAmount = parseFloat(value) || 0;
                 setFormData((prev) => {
                     const next = JSON.parse(JSON.stringify(prev));
-                    next.tips._total = tipsAmount;
-                    next.earnings.tips = tipsAmount;
+                    next.tips._total = value;
+                    next.earnings.tips = parseAmount(value);
                     return next;
                 });
             };
 
             const handleAddParty = () => {
                 const partyId = `party_${(formData.date || '').replace(/-/g, '') || 'temp'}_${Date.now().toString(36)}`;
+                const newParty = {
+                    id: partyId,
+                    name: 'New Party',
+                    type: '',
+                    cutType: formData.type === 'day' ? 'day' : 'night',
+                    location: '',
+                    time: { start: '', end: '', duration: null },
+                    size: '',
+                    packages: { drink: '', food: '' },
+                    tips: {},
+                    workers: { primary: '', supplement: [] },
+                    notes: '',
+                };
+
                 setFormData((prev) => {
                     const next = JSON.parse(JSON.stringify(prev));
                     next.parties = next.parties || {};
-                    next.parties[partyId] = {
-                        id: partyId,
-                        name: 'New Party',
-                        type: '',
-                        cutType: prev.type === 'night' ? 'night' : 'day',
-                        location: '',
-                        time: { start: '', end: '', duration: null },
-                        size: '',
-                        packages: { drink: '', food: '' },
-                        tips: {},
-                        workers: { primary: '', supplement: [] },
-                        notes: '',
-                    };
+                    next.parties[partyId] = newParty;
                     return next;
                 });
+
+                setTimeDrafts((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.parties = next.parties || {};
+                    next.parties[partyId] = { start: '', end: '' };
+                    return next;
+                });
+
+                setPartySnapshots((prev) => ({ ...prev, [partyId]: null }));
+                setExpandedParties((prev) => ({ ...prev, [partyId]: true }));
                 setPanelOpen((prev) => ({ ...prev, parties: true, cuts: true }));
             };
 
@@ -1393,8 +1865,215 @@
                     };
                     return next;
                 });
+                setCutSnapshots((prev) => ({ ...prev, [cutKey]: null }));
+                setExpandedCuts((prev) => ({ ...prev, [cutKey]: true }));
                 setPanelOpen((prev) => ({ ...prev, cuts: true }));
             };
+
+            const togglePartyDetails = (partyId) => {
+                setExpandedParties((prev) => {
+                    const isOpen = !!prev[partyId];
+                    if (!isOpen) {
+                        setPartySnapshots((snapshots) => {
+                            if (Object.prototype.hasOwnProperty.call(snapshots, partyId)) return snapshots;
+                            const original = formData.parties?.[partyId]
+                                ? JSON.parse(JSON.stringify(formData.parties[partyId]))
+                                : null;
+                            return { ...snapshots, [partyId]: original };
+                        });
+                    }
+                    return { ...prev, [partyId]: !isOpen };
+                });
+            };
+
+            const savePartySection = (partyId) => {
+                setPartySnapshots((prev) => {
+                    const next = { ...prev };
+                    delete next[partyId];
+                    return next;
+                });
+                setExpandedParties((prev) => ({ ...prev, [partyId]: false }));
+            };
+
+            const cancelPartySection = (partyId) => {
+                const snapshot = partySnapshots[partyId];
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    if (snapshot === null) {
+                        if (next.parties) {
+                            delete next.parties[partyId];
+                        }
+                    } else if (snapshot) {
+                        next.parties = next.parties || {};
+                        next.parties[partyId] = JSON.parse(JSON.stringify(snapshot));
+                    }
+                    return next;
+                });
+                setTimeDrafts((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.parties = next.parties || {};
+                    if (snapshot === null) {
+                        if (next.parties[partyId]) {
+                            delete next.parties[partyId];
+                        }
+                    } else {
+                        next.parties[partyId] = {
+                            start: formatTimeDisplay(snapshot?.time?.start),
+                            end: formatTimeDisplay(snapshot?.time?.end),
+                        };
+                    }
+                    return next;
+                });
+                setPartySnapshots((prev) => {
+                    const next = { ...prev };
+                    delete next[partyId];
+                    return next;
+                });
+                setExpandedParties((prev) => ({ ...prev, [partyId]: false }));
+                setTimeErrors((prev) => {
+                    const next = { ...prev };
+                    delete next[`parties.${partyId}.time.start`];
+                    delete next[`parties.${partyId}.time.end`];
+                    return next;
+                });
+            };
+
+            const toggleCutDetails = (cutKey) => {
+                setExpandedCuts((prev) => {
+                    const isOpen = !!prev[cutKey];
+                    if (!isOpen) {
+                        setCutSnapshots((snapshots) => {
+                            if (Object.prototype.hasOwnProperty.call(snapshots, cutKey)) return snapshots;
+                            const original = formData.cuts?.[cutKey]
+                                ? JSON.parse(JSON.stringify(formData.cuts[cutKey]))
+                                : null;
+                            return { ...snapshots, [cutKey]: original };
+                        });
+                    }
+                    return { ...prev, [cutKey]: !isOpen };
+                });
+            };
+
+            const saveCutSection = (cutKey) => {
+                setCutSnapshots((prev) => {
+                    const next = { ...prev };
+                    delete next[cutKey];
+                    return next;
+                });
+                setExpandedCuts((prev) => ({ ...prev, [cutKey]: false }));
+            };
+
+            const cancelCutSection = (cutKey) => {
+                const snapshot = cutSnapshots[cutKey];
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    if (snapshot === null) {
+                        if (next.cuts) {
+                            delete next.cuts[cutKey];
+                        }
+                    } else if (snapshot) {
+                        next.cuts = next.cuts || {};
+                        next.cuts[cutKey] = JSON.parse(JSON.stringify(snapshot));
+                    }
+                    return next;
+                });
+                setCutSnapshots((prev) => {
+                    const next = { ...prev };
+                    delete next[cutKey];
+                    return next;
+                });
+                setExpandedCuts((prev) => ({ ...prev, [cutKey]: false }));
+            };
+
+            const deleteCut = (cutKey) => {
+                const baseKeys = new Set(['day', 'mid', 'night']);
+                if (baseKeys.has(cutKey)) return;
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    if (next.cuts) {
+                        delete next.cuts[cutKey];
+                    }
+                    return next;
+                });
+                setCutSnapshots((prev) => {
+                    const next = { ...prev };
+                    delete next[cutKey];
+                    return next;
+                });
+                setExpandedCuts((prev) => {
+                    const next = { ...prev };
+                    delete next[cutKey];
+                    return next;
+                });
+            };
+
+            const handleDeleteParty = (partyId) => {
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    if (next.parties) {
+                        delete next.parties[partyId];
+                    }
+                    return next;
+                });
+                setTimeDrafts((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    if (next.parties && next.parties[partyId]) {
+                        delete next.parties[partyId];
+                    }
+                    return next;
+                });
+                setPartySnapshots((prev) => {
+                    const next = { ...prev };
+                    delete next[partyId];
+                    return next;
+                });
+                setExpandedParties((prev) => {
+                    const next = { ...prev };
+                    delete next[partyId];
+                    return next;
+                });
+                setTimeErrors((prev) => {
+                    const next = { ...prev };
+                    delete next[`parties.${partyId}.time.start`];
+                    delete next[`parties.${partyId}.time.end`];
+                    return next;
+                });
+            };
+
+            const selectShiftType = (nextType) => {
+                if (nextType === 'auto') {
+                    setShiftTypeMode('auto');
+                    const inferred = inferShiftTypeFromTimes(formData.time?.base?.start, formData.time?.base?.end);
+                    setFormData((prev) => ({ ...prev, type: inferred || '' }));
+                } else {
+                    setShiftTypeMode('manual');
+                    setFormData((prev) => ({ ...prev, type: nextType }));
+                }
+                setShiftTypeMenuOpen(false);
+            };
+
+            const removeCoworker = (role, name) => {
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    if (next.coworkers?.[role]) {
+                        delete next.coworkers[role][name];
+                    }
+                    return next;
+                });
+            };
+
+            const shiftTypeLabel = useMemo(() => {
+                if (shiftTypeMode === 'auto') {
+                    if (!formData.type) return 'Auto · Pending';
+                    const meta = SHIFT_TYPE_META[formData.type];
+                    return meta ? `Auto · ${meta.label}` : 'Auto';
+                }
+                if (formData.type) {
+                    const meta = SHIFT_TYPE_META[formData.type];
+                    return meta ? meta.label : 'Shift';
+                }
+                return 'Select shift type';
+            }, [shiftTypeMode, formData.type]);
 
             const handleAddSwindleMovement = () => {
                 setFormData((prev) => {
@@ -1429,18 +2108,21 @@
                 setFormData((prev) => {
                     const next = JSON.parse(JSON.stringify(prev));
                     const hours = next.time.base.hours || calculateHoursBetween(next.time.base.start, next.time.base.end);
-                    const tipsTotal = parseFloat(next.tips._total) || 0;
-                    const wageTotal = parseFloat(next.wage.total) || 0;
-                    const overtime = parseFloat(next.earnings.overtime || next.overtime || 0) || 0;
-                    const chump = parseFloat(next.earnings.chump || 0) || 0;
-                    const consideration = parseFloat(next.earnings.consideration || next.consideration.net || 0) || 0;
-                    const swindle = parseFloat(next.earnings.swindle || next.swindle.total || 0) || 0;
+                    const tipsTotal = parseAmount(next.tips._total);
+                    const wageBase = parseAmount(next.wage.base);
+                    const wageHours = next.wage.hours !== undefined && next.wage.hours !== '' ? parseAmount(next.wage.hours) : hours || 0;
+                    const wageTotal = next.wage.total !== undefined && next.wage.total !== '' ? parseAmount(next.wage.total) : parseFloat((wageBase * wageHours).toFixed(2));
+                    const overtime = parseAmount(next.earnings.overtime || next.overtime);
+                    const chump = parseAmount(next.earnings.chump);
+                    const consideration = parseAmount(next.earnings.consideration || next.consideration.net);
+                    const swindle = parseAmount(next.earnings.swindle || next.swindle.total);
 
                     const totalEarnings = parseFloat((tipsTotal + wageTotal + overtime + chump + consideration + swindle).toFixed(2));
                     const hourlyRate = hours > 0 ? parseFloat((totalEarnings / hours).toFixed(2)) : 0;
 
                     next.time.base.hours = hours;
-                    next.wage.hours = hours;
+                    next.wage.hours = next.wage.hours !== undefined && next.wage.hours !== '' ? next.wage.hours : hours;
+                    next.wage.total = wageTotal;
                     next.summary.hours = hours;
 
                     next.earnings = {
@@ -1465,21 +2147,58 @@
                         id: next.id || `shift_${(next.date || '').replace(/-/g, '')}`,
                     };
                     onSave(payload);
+                    setPartySnapshots({});
+                    setCutSnapshots({});
+                    setExpandedParties({});
+                    setExpandedCuts({});
                     return next;
                 });
             };
 
             const calculatedHours = formData.time.base.hours || calculateHoursBetween(formData.time.base.start, formData.time.base.end);
-            const wageTotal = formData.wage.total || (formData.wage.base || 0) * (calculatedHours || 0);
-            const overtimeTotal = formData.earnings.overtime || formData.overtime || 0;
-            const chumpTotal = formData.earnings.chump || 0;
-            const considerationTotal = formData.earnings.consideration || formData.consideration?.net || 0;
-            const swindleTotal = formData.earnings.swindle || formData.swindle?.total || 0;
-            const displayedEarnings = formData.earnings.total || parseFloat(((formData.tips._total || 0) + wageTotal + overtimeTotal + chumpTotal + considerationTotal + swindleTotal).toFixed(2));
-            const displayedHourly = formData.summary.hourly || (calculatedHours > 0 ? parseFloat((displayedEarnings / calculatedHours).toFixed(2)) : 0);
-            const tipsPerHour = formData.summary.tips?.actual?.perHour || (calculatedHours > 0 ? parseFloat(((formData.tips._total || 0) / calculatedHours).toFixed(2)) : 0);
+            const tipsTotalValue = parseAmount(formData.tips._total);
+            const wageBaseValue = parseAmount(formData.wage.base);
+            const wageHoursValue =
+                formData.wage.hours !== undefined && formData.wage.hours !== ''
+                    ? parseAmount(formData.wage.hours)
+                    : calculatedHours || 0;
+            const wageTotal =
+                formData.wage.total !== undefined && formData.wage.total !== ''
+                    ? parseAmount(formData.wage.total)
+                    : parseFloat((wageBaseValue * wageHoursValue).toFixed(2));
+            const overtimeTotal = parseAmount(formData.earnings.overtime);
+            const chumpTotal = parseAmount(formData.earnings.chump);
+            const considerationTotal = parseAmount(formData.earnings.consideration ?? formData.consideration?.net);
+            const swindleTotal = parseAmount(formData.earnings.swindle ?? formData.swindle?.total);
+            const displayedEarnings =
+                formData.earnings.total !== undefined && formData.earnings.total !== ''
+                    ? parseAmount(formData.earnings.total)
+                    : parseFloat((tipsTotalValue + wageTotal + overtimeTotal + chumpTotal + considerationTotal + swindleTotal).toFixed(2));
+            const displayedHourly =
+                formData.summary.hourly !== undefined && formData.summary.hourly !== ''
+                    ? parseAmount(formData.summary.hourly)
+                    : calculatedHours > 0
+                        ? parseFloat((displayedEarnings / calculatedHours).toFixed(2))
+                        : 0;
+            const tipsPerHour =
+                formData.summary.tips?.actual?.perHour !== undefined && formData.summary.tips.actual.perHour !== ''
+                    ? parseAmount(formData.summary.tips.actual.perHour)
+                    : calculatedHours > 0
+                        ? parseFloat((tipsTotalValue / calculatedHours).toFixed(2))
+                        : 0;
+            const wageClockHours =
+                formData.wage?.clock?.start && formData.wage?.clock?.end
+                    ? calculateHoursBetween(formData.wage.clock.start, formData.wage.clock.end)
+                    : null;
 
-            const shiftTypeMeta = SHIFT_TYPE_META[formData.type] || SHIFT_TYPE_META.night;
+            const shiftTypeMeta =
+                formData.type && SHIFT_TYPE_META[formData.type]
+                    ? SHIFT_TYPE_META[formData.type]
+                    : {
+                          icon: shiftTypeMode === 'auto' ? 'fa-circle-half-stroke' : 'fa-circle-question',
+                          label: shiftTypeMode === 'auto' ? 'Auto Shift' : 'Unassigned Shift',
+                          accent: 'from-slate-800 to-slate-900',
+                      };
             const partyCount = Object.keys(formData.parties || {}).length;
             const bartenderCount = Object.keys(formData.coworkers?.bartenders || {}).length;
             const serverCount = Object.keys(formData.coworkers?.servers || {}).length;
@@ -1577,43 +2296,85 @@
                                         required
                                     />
                                 </div>
-                                <div>
+                                <div ref={shiftTypeDropdownRef}>
                                     <label className="text-sm uppercase tracking-wide text-slate-400">Shift Type</label>
-                                    <div className="mt-2 grid grid-cols-3 gap-2">
-                                        {Object.entries(SHIFT_TYPE_META).map(([key, meta]) => (
-                                            <button
-                                                key={key}
-                                                type="button"
-                                                onClick={() => updateFormPath('type', key)}
-                                                className={`px-4 py-3 rounded-2xl border text-sm font-medium flex items-center justify-center gap-2 transition ${
-                                                    formData.type === key
-                                                        ? 'bg-cyan-500/20 border-cyan-400 text-cyan-100'
-                                                        : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:border-slate-500'
-                                                }`}
-                                            >
-                                                <i className={`fas ${meta.icon}`}></i>
-                                                <span>{meta.label.split(' ')[0]}</span>
-                                            </button>
-                                        ))}
+                                    <div className="mt-2 relative">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShiftTypeMenuOpen((prev) => !prev)}
+                                            className="w-full px-5 py-4 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm font-medium flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                        >
+                                            <span>{shiftTypeLabel}</span>
+                                            <i className={`fas fa-chevron-${shiftTypeMenuOpen ? 'up' : 'down'} text-slate-500`}></i>
+                                        </button>
+                                        {shiftTypeMenuOpen && (
+                                            <div className="absolute z-20 mt-2 w-full bg-slate-900/95 border border-slate-700 rounded-xl shadow-lg backdrop-blur space-y-1 py-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => selectShiftType('auto')}
+                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                        shiftTypeMode === 'auto' ? 'text-cyan-200' : 'text-slate-200'
+                                                    }`}
+                                                >
+                                                    Auto (based on times)
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => selectShiftType('day')}
+                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                        shiftTypeMode === 'manual' && formData.type === 'day' ? 'text-cyan-200' : 'text-slate-200'
+                                                    }`}
+                                                >
+                                                    Day Shift
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => selectShiftType('night')}
+                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                        shiftTypeMode === 'manual' && formData.type === 'night' ? 'text-cyan-200' : 'text-slate-200'
+                                                    }`}
+                                                >
+                                                    Night Shift
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => selectShiftType('double')}
+                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                        shiftTypeMode === 'manual' && formData.type === 'double' ? 'text-cyan-200' : 'text-slate-200'
+                                                    }`}
+                                                >
+                                                    Double Shift
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                <div className="md:col-span-1">
+                        <div className="md:col-span-1">
                                     <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
                                         Start Time
                                         <button type="button" onClick={() => togglePanel('timings')} className="text-slate-500 hover:text-cyan-300">
                                             <i className="fas fa-clock"></i>
                                         </button>
                                     </label>
-                                    <input
-                                        type="time"
-                                        value={formData.time.base.start}
-                                        onChange={(e) => handlePrimaryTimeChange('start', e.target.value)}
-                                        className="mt-2 w-full px-5 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-2xl tracking-wide focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                        required
-                                    />
+                            <div className="mt-2 space-y-1">
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={getTimeDraftValue('time.base.start')}
+                                    onChange={(e) => handleTimeDraftChange('time.base.start', e.target.value)}
+                                    onBlur={(e) => commitTimeValue('time.base.start', e.target.value, { mode: 'start' })}
+                                    onFocus={(e) => e.target.select()}
+                                    className="w-full px-5 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-2xl tracking-wide focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                    placeholder="e.g. 10"
+                                    required
+                                />
+                                {timeErrors['time.base.start'] && (
+                                    <p className="text-xs text-amber-400">{timeErrors['time.base.start']}</p>
+                                )}
+                            </div>
                                 </div>
                                 <div className="md:col-span-1">
                                     <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
@@ -1622,13 +2383,27 @@
                                             <i className="fas fa-business-time"></i>
                                         </button>
                                     </label>
-                                    <input
-                                        type="time"
-                                        value={formData.time.base.end}
-                                        onChange={(e) => handlePrimaryTimeChange('end', e.target.value)}
-                                        className="mt-2 w-full px-5 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-2xl tracking-wide focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                        required
-                                    />
+                            <div className="mt-2 space-y-1">
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={getTimeDraftValue('time.base.end')}
+                                    onChange={(e) => handleTimeDraftChange('time.base.end', e.target.value)}
+                                    onBlur={(e) =>
+                                        commitTimeValue('time.base.end', e.target.value, {
+                                            mode: 'end',
+                                            referenceStart: formData.time?.base?.start,
+                                        })
+                                    }
+                                    onFocus={(e) => e.target.select()}
+                                    className="w-full px-5 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-2xl tracking-wide focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                    placeholder="e.g. 630"
+                                    required
+                                />
+                                {timeErrors['time.base.end'] && (
+                                    <p className="text-xs text-amber-400">{timeErrors['time.base.end']}</p>
+                                )}
+                            </div>
                                 </div>
                                 <div className="md:col-span-1">
                                     <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
@@ -1737,259 +2512,434 @@
 
                             {panelOpen.timings && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <h3 className="text-lg font-semibold text-slate-100">Timing Buckets</h3>
+                                      <div className="flex items-center justify-between">
+                                          <button
+                                              type="button"
+                                              onClick={() => togglePanel('timings')}
+                                              className="text-lg font-semibold text-slate-100 hover:text-cyan-200 transition flex items-center gap-2"
+                                          >
+                                              Timing Buckets
+                                              <i className={`fas fa-chevron-${panelOpen.timings ? 'up' : 'down'} text-xs text-slate-500`}></i>
+                                          </button>
                                         <button onClick={() => togglePanel('timings')} type="button" className="text-slate-500 hover:text-slate-200">
                                             <i className="fas fa-xmark"></i>
                                         </button>
                                     </div>
-                                    {['present', 'clock', 'tips', 'working'].map((bucket) => (
-                                        <div key={bucket} className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
-                                            <div className="md:col-span-1">
-                                                <p className="text-xs uppercase tracking-wider text-slate-500">{bucket.toUpperCase()}</p>
-                                            </div>
-                                            <div className="md:col-span-1">
-                                                <label className="text-xs text-slate-500">Start</label>
-                                                <input
-                                                    type="time"
-                                                    value={formData.time[bucket]?.start || ''}
-                                                    onChange={(e) => updateFormPath(`time.${bucket}.start`, e.target.value)}
-                                                    className="mt-1 w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                />
-                                            </div>
-                                            <div className="md:col-span-1">
-                                                <label className="text-xs text-slate-500">End</label>
-                                                <input
-                                                    type="time"
-                                                    value={formData.time[bucket]?.end || ''}
-                                                    onChange={(e) => updateFormPath(`time.${bucket}.end`, e.target.value)}
-                                                    className="mt-1 w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                />
-                                            </div>
-                                            <div className="md:col-span-1">
-                                                <label className="text-xs text-slate-500">Hours</label>
-                                                <input
-                                                    type="number"
-                                                    step="0.25"
-                                                    value={formData.time[bucket]?.hours || ''}
-                                                    onChange={(e) => updateFormPath(`time.${bucket}.hours`, parseFloat(e.target.value) || 0)}
-                                                    className="mt-1 w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                />
-                                            </div>
-                                        </div>
-                                    ))}
+                                      {['present', 'clock', 'tips', 'working'].map((bucket) => (
+                                          <div key={bucket} className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+                                              <div className="md:col-span-1">
+                                                  <p className="text-xs uppercase tracking-wider text-slate-500">{bucket.toUpperCase()}</p>
+                                              </div>
+                                              <div className="md:col-span-1">
+                                                  <label className="text-xs text-slate-500">Start</label>
+                                                  <div className="mt-1 space-y-1">
+                                                      <input
+                                                          type="text"
+                                                          inputMode="numeric"
+                                                          value={getTimeDraftValue(`time.${bucket}.start`)}
+                                                          onChange={(e) => handleTimeDraftChange(`time.${bucket}.start`, e.target.value)}
+                                                          onBlur={(e) => commitTimeValue(`time.${bucket}.start`, e.target.value, { mode: 'start' })}
+                                                          onFocus={(e) => e.target.select()}
+                                                          className="w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                          placeholder="e.g. 4p"
+                                                      />
+                                                      {timeErrors[`time.${bucket}.start`] && (
+                                                          <p className="text-xs text-amber-400">{timeErrors[`time.${bucket}.start`]}</p>
+                                                      )}
+                                                  </div>
+                                              </div>
+                                              <div className="md:col-span-1">
+                                                  <label className="text-xs text-slate-500">End</label>
+                                                  <div className="mt-1 space-y-1">
+                                                      <input
+                                                          type="text"
+                                                          inputMode="numeric"
+                                                          value={getTimeDraftValue(`time.${bucket}.end`)}
+                                                          onChange={(e) => handleTimeDraftChange(`time.${bucket}.end`, e.target.value)}
+                                                          onBlur={(e) =>
+                                                              commitTimeValue(`time.${bucket}.end`, e.target.value, {
+                                                                  mode: 'end',
+                                                                  referenceStart: formData.time?.[bucket]?.start,
+                                                              })
+                                                          }
+                                                          onFocus={(e) => e.target.select()}
+                                                          className="w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                          placeholder="e.g. 1230"
+                                                      />
+                                                      {timeErrors[`time.${bucket}.end`] && (
+                                                          <p className="text-xs text-amber-400">{timeErrors[`time.${bucket}.end`]}</p>
+                                                      )}
+                                                  </div>
+                                              </div>
+                                              <div className="md:col-span-1">
+                                                  <label className="text-xs text-slate-500">Hours</label>
+                                                  <input
+                                                      type="number"
+                                                      step="0.25"
+                                                      value={formData.time[bucket]?.hours || ''}
+                                                      onChange={(e) => updateFormPath(`time.${bucket}.hours`, e.target.value === '' ? '' : parseFloat(e.target.value))}
+                                                      className="mt-1 w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                  />
+                                              </div>
+                                          </div>
+                                      ))}
                                 </div>
                             )}
 
                             {panelOpen.cuts && (
-                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
+                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
                                     <div className="flex items-center justify-between">
-                                        <h3 className="text-lg font-semibold text-slate-100">Cuts</h3>
+                                        <button
+                                            type="button"
+                                            onClick={() => togglePanel('cuts')}
+                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
+                                        >
+                                            Cuts
+                                            <i className={`fas fa-chevron-${panelOpen.cuts ? 'up' : 'down'} text-xs text-slate-500`}></i>
+                                        </button>
                                         <button type="button" onClick={handleAddCut} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
                                             <i className="fas fa-plus"></i>
                                             Custom Cut
                                         </button>
                                     </div>
-                                    {Object.entries(formData.cuts || {}).map(([key, cut]) => (
-                                        <div key={key} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
-                                            <div className="flex flex-wrap items-center gap-3 justify-between">
-                                                <div className="flex items-center gap-3">
-                                                    <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
-                                                        {cut.label || key.toUpperCase()}
-                                                    </span>
-                                                    <input
-                                                        type="text"
-                                                        value={cut.label || ''}
-                                                        onChange={(e) => updateFormPath(`cuts.${key}.label`, e.target.value)}
-                                                        className="px-3 py-1.5 bg-transparent border-b border-slate-700 text-sm"
-                                                        placeholder="Label"
-                                                    />
+                                    <div className="space-y-3">
+                                        {Object.entries(formData.cuts || {}).map(([key, cut]) => {
+                                            const expanded = !!expandedCuts[key];
+                        const baseCut = ['day', 'mid', 'night'].includes(key);
+                                            const label = cut.label || key.charAt(0).toUpperCase() + key.slice(1);
+                                            return (
+                                                <div key={key} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
+                                                    <div className="flex flex-col md:flex-row md:items-center gap-3 justify-between">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => toggleCutDetails(key)}
+                                                            className="flex items-center gap-3 text-left text-slate-100 hover:text-cyan-200 transition"
+                                                        >
+                                                            <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">{label}</span>
+                                                            <i className={`fas fa-chevron-${expanded ? 'up' : 'down'} text-xs text-slate-500`}></i>
+                                                        </button>
+                                                        <div className="flex items-center gap-2">
+                                                            <label className="text-xs uppercase text-slate-500">My Tips</label>
+                                                            <input
+                                                                type="text"
+                                                                value={cut.me?.tips ?? ''}
+                                                                onChange={(e) => updateFormPath(`cuts.${key}.me.tips`, e.target.value)}
+                                                                className="px-3 py-1.5 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                placeholder="0.00"
+                                                            />
+                                                        </div>
+                                                        {!baseCut && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => deleteCut(key)}
+                                                                className="text-xs text-rose-300 hover:text-rose-100 px-3 py-1 border border-rose-500/40 rounded-lg"
+                                                            >
+                                                                <i className="fas fa-trash"></i>
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                    {expanded && (
+                                                        <div className="space-y-4 border-t border-slate-800/60 pt-4">
+                                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Label</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={cut.label || ''}
+                                                                        onChange={(e) => updateFormPath(`cuts.${key}.label`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="Label"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Status</label>
+                                                                    <select
+                                                                        value={cut.status || 'pending'}
+                                                                        onChange={(e) => updateFormPath(`cuts.${key}.status`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                    >
+                                                                        <option value="pending">Pending</option>
+                                                                        <option value="estimated">Estimated</option>
+                                                                        <option value="confirmed">Confirmed</option>
+                                                                    </select>
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">My Hours</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={cut.me?.hours ?? ''}
+                                                                        onChange={(e) => updateFormPath(`cuts.${key}.me.hours`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="0"
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Pool Total</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={cut.total?.tips ?? ''}
+                                                                        onChange={(e) => updateFormPath(`cuts.${key}.total.tips`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="optional"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Pool Hours</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={cut.total?.hours ?? ''}
+                                                                        onChange={(e) => updateFormPath(`cuts.${key}.total.hours`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="optional"
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Share %</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={cut.share?.pct ?? ''}
+                                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.pct`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="optional"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">People</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={cut.share?.people ?? ''}
+                                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.people`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="optional"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Notes</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={cut.share?.notes ?? ''}
+                                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.notes`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="Team, weighting, etc."
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex justify-end gap-2">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => cancelCutSection(key)}
+                                                                    className="px-4 py-2 border border-slate-700 text-slate-300 rounded-xl hover:border-slate-500"
+                                                                >
+                                                                    Cancel
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => saveCutSection(key)}
+                                                                    className="px-4 py-2 bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 rounded-xl hover:bg-cyan-500/30"
+                                                                >
+                                                                    Save &amp; Close
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </div>
-                                                <select
-                                                    value={cut.status || 'pending'}
-                                                    onChange={(e) => updateFormPath(`cuts.${key}.status`, e.target.value)}
-                                                    className="px-3 py-1.5 bg-slate-900/60 border border-slate-700 rounded-xl text-xs"
-                                                >
-                                                    <option value="pending">Pending</option>
-                                                    <option value="estimated">Estimated</option>
-                                                    <option value="confirmed">Confirmed</option>
-                                                </select>
-                                            </div>
-                                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">My Tips</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        value={cut.me?.tips || ''}
-                                                        onChange={(e) => updateFormPath(`cuts.${key}.me.tips`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="0.00"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">My Hours</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.1"
-                                                        value={cut.me?.hours || ''}
-                                                        onChange={(e) => updateFormPath(`cuts.${key}.me.hours`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="0"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">Pool Total</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        value={cut.total?.tips || ''}
-                                                        onChange={(e) => updateFormPath(`cuts.${key}.total.tips`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="optional"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">Pool Hours</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.1"
-                                                        value={cut.total?.hours || ''}
-                                                        onChange={(e) => updateFormPath(`cuts.${key}.total.hours`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="optional"
-                                                    />
-                                                </div>
-                                            </div>
-                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">Share %</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        value={cut.share?.pct || ''}
-                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.pct`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="optional"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">People</label>
-                                                    <input
-                                                        type="number"
-                                                        value={cut.share?.people || ''}
-                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.people`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="optional"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">Notes</label>
-                                                    <input
-                                                        type="text"
-                                                        value={cut.share?.notes || ''}
-                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.notes`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="Team, weighting, etc."
-                                                    />
-                                                </div>
-                                            </div>
-                                        </div>
-                                    ))}
+                                            );
+                                        })}
+                                    </div>
                                 </div>
                             )}
 
                             {panelOpen.parties && (
-                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
+                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
                                     <div className="flex items-center justify-between">
-                                        <h3 className="text-lg font-semibold text-slate-100">Parties & Events</h3>
+                                        <button
+                                            type="button"
+                                            onClick={() => togglePanel('parties')}
+                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
+                                        >
+                                            Parties &amp; Events
+                                            <i className={`fas fa-chevron-${panelOpen.parties ? 'up' : 'down'} text-xs text-slate-500`}></i>
+                                        </button>
                                         <button type="button" onClick={handleAddParty} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
                                             <i className="fas fa-plus"></i>
                                             Add Party
                                         </button>
                                     </div>
-                                    {partyCount === 0 && (
-                                        <p className="text-sm text-slate-500">No parties logged yet.</p>
-                                    )}
-                                    {Object.entries(formData.parties || {}).map(([id, party], index) => (
-                                        <div key={id} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
-                                            <div className="flex items-center justify-between gap-3">
-                                                <div className="flex items-center gap-3">
-                                                    <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">Party {index + 1}</span>
-                                                    <input
-                                                        type="text"
-                                                        value={party.name || ''}
-                                                        onChange={(e) => updateFormPath(`parties.${id}.name`, e.target.value)}
-                                                        className="bg-transparent border-b border-slate-700 text-sm px-2 py-1"
-                                                        placeholder="Party Name"
-                                                    />
+                                    {partyCount === 0 && <p className="text-sm text-slate-500">No parties logged yet.</p>}
+                                    <div className="space-y-3">
+                                        {Object.entries(formData.parties || {}).map(([id, party], index) => {
+                                            const expanded = !!expandedParties[id];
+                                            const partyLabel = party.name || `Party ${index + 1}`;
+                                            const defaultCutType = formData.type === 'day' ? 'day' : 'night';
+                                            return (
+                                                <div key={id} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
+                                                    <div className="flex flex-col md:flex-row md:items-center gap-3 justify-between">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => togglePartyDetails(id)}
+                                                            className="flex items-center gap-3 text-left text-slate-100 hover:text-cyan-200 transition"
+                                                        >
+                                                            <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
+                                                                {`Party ${index + 1}`}
+                                                            </span>
+                                                            <span>{partyLabel}</span>
+                                                            <i className={`fas fa-chevron-${expanded ? 'up' : 'down'} text-xs text-slate-500`}></i>
+                                                        </button>
+                                                        <div className="flex items-center gap-2">
+                                                            <select
+                                                                value={party.cutType || defaultCutType}
+                                                                onChange={(e) => updateFormPath(`parties.${id}.cutType`, e.target.value)}
+                                                                className="px-3 py-1.5 bg-slate-900/60 border border-slate-700 rounded-xl text-xs"
+                                                            >
+                                                                <option value="day">Day</option>
+                                                                <option value="night">Night</option>
+                                                            </select>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleDeleteParty(id)}
+                                                                className="text-xs text-rose-300 hover:text-rose-100 px-3 py-1 border border-rose-500/40 rounded-lg"
+                                                            >
+                                                                <i className="fas fa-trash"></i>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    {expanded && (
+                                                        <div className="space-y-4 border-t border-slate-800/60 pt-4">
+                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Party Name</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={party.name || ''}
+                                                                        onChange={(e) => updateFormPath(`parties.${id}.name`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="Party Name"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Location</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={party.location || ''}
+                                                                        onChange={(e) => updateFormPath(`parties.${id}.location`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="Bar, Room, Patio..."
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Start</label>
+                                                                    <div className="mt-1 space-y-1">
+                                                                        <input
+                                                                            type="text"
+                                                                            inputMode="numeric"
+                                                                            value={getTimeDraftValue(`parties.${id}.time.start`)}
+                                                                            onChange={(e) => handleTimeDraftChange(`parties.${id}.time.start`, e.target.value)}
+                                                                            onBlur={(e) =>
+                                                                                commitTimeValue(`parties.${id}.time.start`, e.target.value, {
+                                                                                    mode: 'start',
+                                                                                })
+                                                                            }
+                                                                            onFocus={(e) => e.target.select()}
+                                                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                            placeholder="e.g. 3"
+                                                                        />
+                                                                        {timeErrors[`parties.${id}.time.start`] && (
+                                                                            <p className="text-xs text-amber-400">{timeErrors[`parties.${id}.time.start`]}</p>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">End</label>
+                                                                    <div className="mt-1 space-y-1">
+                                                                        <input
+                                                                            type="text"
+                                                                            inputMode="numeric"
+                                                                            value={getTimeDraftValue(`parties.${id}.time.end`)}
+                                                                            onChange={(e) => handleTimeDraftChange(`parties.${id}.time.end`, e.target.value)}
+                                                                            onBlur={(e) =>
+                                                                                commitTimeValue(`parties.${id}.time.end`, e.target.value, {
+                                                                                    mode: 'end',
+                                                                                    referenceStart: party.time?.start,
+                                                                                })
+                                                                            }
+                                                                            onFocus={(e) => e.target.select()}
+                                                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                            placeholder="e.g. 630"
+                                                                        />
+                                                                        {timeErrors[`parties.${id}.time.end`] && (
+                                                                            <p className="text-xs text-amber-400">{timeErrors[`parties.${id}.time.end`]}</p>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Gratuity</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={party.tips?.gratuity ?? ''}
+                                                                        onChange={(e) => updateFormPath(`parties.${id}.tips.gratuity`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="≈800"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs uppercase text-slate-500">Cash Tips</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={party.tips?.cashTips ?? ''}
+                                                                        onChange={(e) => updateFormPath(`parties.${id}.tips.cashTips`, e.target.value)}
+                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                        placeholder="optional"
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                            <textarea
+                                                                value={party.notes || ''}
+                                                                onChange={(e) => updateFormPath(`parties.${id}.notes`, e.target.value)}
+                                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
+                                                                placeholder="Notes (helpers, packages, setup)"
+                                                            ></textarea>
+                                                            <div className="flex justify-end gap-2">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => cancelPartySection(id)}
+                                                                    className="px-4 py-2 border border-slate-700 text-slate-300 rounded-xl hover:border-slate-500"
+                                                                >
+                                                                    Cancel
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => savePartySection(id)}
+                                                                    className="px-4 py-2 bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 rounded-xl hover:bg-cyan-500/30"
+                                                                >
+                                                                    Save &amp; Close
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </div>
-                                                <select
-                                                    value={party.cutType || (formData.type === 'night' ? 'night' : 'day')}
-                                                    onChange={(e) => updateFormPath(`parties.${id}.cutType`, e.target.value)}
-                                                    className="px-3 py-1.5 bg-slate-900/60 border border-slate-700 rounded-xl text-xs"
-                                                >
-                                                    <option value="day">Day</option>
-                                                    <option value="night">Night</option>
-                                                </select>
-                                            </div>
-                                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">Start</label>
-                                                    <input
-                                                        type="time"
-                                                        value={party.time?.start || ''}
-                                                        onChange={(e) => updateFormPath(`parties.${id}.time.start`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">End</label>
-                                                    <input
-                                                        type="time"
-                                                        value={party.time?.end || ''}
-                                                        onChange={(e) => updateFormPath(`parties.${id}.time.end`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">Gratuity</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        value={party.tips?.gratuity || ''}
-                                                        onChange={(e) => updateFormPath(`parties.${id}.tips.gratuity`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="≈800"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">Cash Tips</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        value={party.tips?.cashTips || ''}
-                                                        onChange={(e) => updateFormPath(`parties.${id}.tips.cashTips`, e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="optional"
-                                                    />
-                                                </div>
-                                            </div>
-                                            <textarea
-                                                value={party.notes || ''}
-                                                onChange={(e) => updateFormPath(`parties.${id}.notes`, e.target.value)}
-                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
-                                                placeholder="Notes (helpers, packages, setup)"
-                                            ></textarea>
-                                        </div>
-                                    ))}
+                                            );
+                                        })}
+                                    </div>
                                 </div>
                             )}
 
                             {panelOpen.coworkers && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
                                     <div className="flex items-center justify-between">
-                                        <h3 className="text-lg font-semibold text-slate-100">Coworkers</h3>
+                                        <button
+                                            type="button"
+                                            onClick={() => togglePanel('coworkers')}
+                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
+                                        >
+                                            Coworkers
+                                            <i className={`fas fa-chevron-${panelOpen.coworkers ? 'up' : 'down'} text-xs text-slate-500`}></i>
+                                        </button>
                                         <button
                                             type="button"
                                             onClick={() => updateFormPath(`coworkers.bartenders.Temp_${Date.now().toString(36)}`, ['', '', ''])}
@@ -2001,7 +2951,7 @@
                                     </div>
                                     <div className="space-y-4">
                                         {Object.entries(formData.coworkers?.bartenders || {}).map(([name, details]) => (
-                                            <div key={name} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-center">
+                                            <div key={name} className="grid grid-cols-1 md:grid-cols-5 gap-3 items-center">
                                                 <input
                                                     type="text"
                                                     value={name}
@@ -2039,6 +2989,13 @@
                                                     className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
                                                     placeholder="Hours"
                                                 />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => removeCoworker('bartenders', name)}
+                                                    className="text-xs text-rose-300 hover:text-rose-100 px-3 py-1 border border-rose-500/40 rounded-lg self-start md:self-center"
+                                                >
+                                                    <i className="fas fa-trash"></i>
+                                                </button>
                                             </div>
                                         ))}
                                     </div>
@@ -2075,40 +3032,99 @@
                             {panelOpen.enhancements && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
                                     <div className="flex items-center justify-between">
-                                        <h3 className="text-lg font-semibold text-slate-100">Enhancements & Adjustments</h3>
+                                        <button
+                                            type="button"
+                                            onClick={() => togglePanel('enhancements')}
+                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
+                                        >
+                                            Enhancements &amp; Adjustments
+                                            <i className={`fas fa-chevron-${panelOpen.enhancements ? 'up' : 'down'} text-xs text-slate-500`}></i>
+                                        </button>
                                         <div className="text-xs text-slate-500">Group overtime, consideration, swindle</div>
                                     </div>
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
                                             <p className="text-xs uppercase tracking-wider text-slate-500">Wage</p>
-                                            <div className="mt-3 space-y-2">
-                                                <input
-                                                    type="number"
-                                                    step="0.01"
-                                                    value={formData.wage.base}
-                                                    onChange={(e) => updateFormPath('wage.base', parseFloat(e.target.value) || 0)}
-                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Rate"
-                                                />
-                                                <input
-                                                    type="number"
-                                                    step="0.1"
-                                                    value={formData.wage.hours}
-                                                    onChange={(e) => updateFormPath('wage.hours', parseFloat(e.target.value) || 0)}
-                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Hours"
-                                                />
+                                            <div className="mt-3 space-y-3">
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">Base Rate</label>
+                                                    <input
+                                                        type="text"
+                                                        value={formData.wage.base ?? ''}
+                                                        onChange={(e) => updateFormPath('wage.base', e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="5.00"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">Hours</label>
+                                                    <input
+                                                        type="text"
+                                                        value={formData.wage.hours ?? ''}
+                                                        onChange={(e) => updateFormPath('wage.hours', e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="6"
+                                                    />
+                                                </div>
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                    <div>
+                                                        <label className="text-xs uppercase text-slate-500">Clock Start</label>
+                                                        <div className="mt-1 space-y-1">
+                                                            <input
+                                                                type="text"
+                                                                inputMode="numeric"
+                                                                value={getTimeDraftValue('wage.clock.start')}
+                                                                onChange={(e) => handleTimeDraftChange('wage.clock.start', e.target.value)}
+                                                                onBlur={(e) => commitTimeValue('wage.clock.start', e.target.value, { mode: 'start' })}
+                                                                onFocus={(e) => e.target.select()}
+                                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                placeholder="10"
+                                                            />
+                                                            {timeErrors['wage.clock.start'] && (
+                                                                <p className="text-xs text-amber-400">{timeErrors['wage.clock.start']}</p>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-xs uppercase text-slate-500">Clock End</label>
+                                                        <div className="mt-1 space-y-1">
+                                                            <input
+                                                                type="text"
+                                                                inputMode="numeric"
+                                                                value={getTimeDraftValue('wage.clock.end')}
+                                                                onChange={(e) => handleTimeDraftChange('wage.clock.end', e.target.value)}
+                                                                onBlur={(e) =>
+                                                                    commitTimeValue('wage.clock.end', e.target.value, {
+                                                                        mode: 'end',
+                                                                        referenceStart: formData.wage?.clock?.start,
+                                                                    })
+                                                                }
+                                                                onFocus={(e) => e.target.select()}
+                                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                                placeholder="6p"
+                                                            />
+                                                            {timeErrors['wage.clock.end'] && (
+                                                                <p className="text-xs text-amber-400">{timeErrors['wage.clock.end']}</p>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                {wageClockHours != null && (
+                                                    <p className="text-xs text-slate-500">
+                                                        Clocked {wageClockHours.toFixed(2)} hours
+                                                    </p>
+                                                )}
                                                 <p className="text-xs text-slate-500">Total ${wageTotal.toFixed(2)}</p>
                                             </div>
                                         </div>
                                         <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
                                             <p className="text-xs uppercase tracking-wider text-slate-500">Overtime</p>
                                             <input
-                                                type="number"
-                                                step="0.01"
-                                                value={formData.earnings.overtime || formData.overtime || ''}
-                                                onChange={(e) => updateFormPath('earnings.overtime', parseFloat(e.target.value) || 0)}
+                                                type="text"
+                                                value={formData.earnings.overtime ?? ''}
+                                                onChange={(e) => updateFormPath('earnings.overtime', e.target.value)}
                                                 className="mt-3 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="0.00"
                                             />
                                         </div>
                                         <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
@@ -2234,7 +3250,14 @@
                             {panelOpen.drinking && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
                                     <div className="flex items-center justify-between">
-                                        <h3 className="text-lg font-semibold text-slate-100">On-Shift Drinking</h3>
+                                        <button
+                                            type="button"
+                                            onClick={() => togglePanel('drinking')}
+                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
+                                        >
+                                            On-Shift Drinking
+                                            <i className={`fas fa-chevron-${panelOpen.drinking ? 'up' : 'down'} text-xs text-slate-500`}></i>
+                                        </button>
                                         <button type="button" onClick={handleAddDrinkingItem} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
                                             <i className="fas fa-plus"></i>
                                             Add Item
@@ -2371,11 +3394,11 @@
                             <div className="space-y-2 text-slate-300 text-sm">
                                 <div className="flex justify-between">
                                     <span>Start:</span>
-                                    <span className="font-semibold text-slate-100">{shift.time?.base?.start}</span>
+                                          <span className="font-semibold text-slate-100">{formatTimeDisplay(shift.time?.base?.start)}</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span>End:</span>
-                                    <span className="font-semibold text-slate-100">{shift.time?.base?.end}</span>
+                                          <span className="font-semibold text-slate-100">{formatTimeDisplay(shift.time?.base?.end)}</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span>Hours:</span>
@@ -2387,24 +3410,24 @@
                         <div className="bg-slate-900/70 rounded-xl p-4 border border-slate-800/60">
                             <h3 className="font-semibold text-slate-100 mb-3">Earnings Breakdown</h3>
                             <div className="space-y-2 text-sm text-slate-300">
-                                <div className="flex justify-between">
-                                    <span>Tips:</span>
-                                    <span className="font-semibold text-cyan-300">${shift.earnings?.tips?.toFixed(2) || '0.00'}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <span>Wage:</span>
-                                    <span className="font-semibold text-emerald-300">${shift.earnings?.wage?.toFixed(2) || '0.00'}</span>
-                                </div>
-                                {shift.earnings?.overtime > 0 && (
-                                    <div className="flex justify-between">
-                                        <span>Overtime:</span>
-                                        <span className="font-semibold text-amber-300">${shift.earnings.overtime.toFixed(2)}</span>
-                                    </div>
-                                )}
-                                <div className="flex justify-between pt-2 border-t border-slate-800/60 text-slate-100">
-                                    <span className="font-semibold">Total:</span>
-                                    <span className="font-bold text-xl text-emerald-300">${shift.earnings?.total?.toFixed(2) || '0.00'}</span>
-                                </div>
+                                  <div className="flex justify-between">
+                                      <span>Tips:</span>
+                                      <span className="font-semibold text-cyan-300">${Number(shift.earnings?.tips ?? 0).toFixed(2)}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                      <span>Wage:</span>
+                                      <span className="font-semibold text-emerald-300">${Number(shift.earnings?.wage ?? 0).toFixed(2)}</span>
+                                  </div>
+                                  {Number(shift.earnings?.overtime ?? 0) > 0 && (
+                                      <div className="flex justify-between">
+                                          <span>Overtime:</span>
+                                          <span className="font-semibold text-amber-300">${Number(shift.earnings?.overtime ?? 0).toFixed(2)}</span>
+                                      </div>
+                                  )}
+                                  <div className="flex justify-between pt-2 border-t border-slate-800/60 text-slate-100">
+                                      <span className="font-semibold">Total:</span>
+                                      <span className="font-bold text-xl text-emerald-300">${Number(shift.earnings?.total ?? 0).toFixed(2)}</span>
+                                  </div>
                             </div>
                         </div>
 
@@ -2413,16 +3436,16 @@
                             <div className="space-y-2 text-sm text-slate-300">
                                 <div className="flex justify-between">
                                     <span>Hourly Rate:</span>
-                                    <span className="font-bold text-lg text-indigo-300">${shift.summary?.hourly?.toFixed(2) || '0.00'}/hr</span>
+                                      <span className="font-bold text-lg text-indigo-300">${Number(shift.summary?.hourly ?? 0).toFixed(2)}/hr</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span>Tips/Hour:</span>
-                                    <span className="font-semibold text-fuchsia-300">${shift.summary?.tips?.actual?.perHour?.toFixed(2) || '0.00'}/hr</span>
+                                      <span className="font-semibold text-fuchsia-300">${Number(shift.summary?.tips?.actual?.perHour ?? 0).toFixed(2)}/hr</span>
                                 </div>
-                                <div className="flex justify-between">
-                                    <span>Total Hours:</span>
-                                    <span className="font-semibold text-slate-100">{shift.summary?.hours?.toFixed(1) || '0.0'}h</span>
-                                </div>
+                                  <div className="flex justify-between">
+                                      <span>Total Hours:</span>
+                                      <span className="font-semibold text-slate-100">{Number(shift.summary?.hours ?? 0).toFixed(1)}h</span>
+                                  </div>
                             </div>
                         </div>
                     </div>
