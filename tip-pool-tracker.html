@@ -1,0 +1,2448 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Tip Pool Tracker</title>
+        <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+        <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+        <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script src="https://apis.google.com/js/api.js"></script>
+        <script src="https://accounts.google.com/gsi/client" async defer></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background-color: #090b12;
+            color: #f1f5f9;
+        }
+        .glass {
+            background: rgba(23, 26, 35, 0.85);
+            backdrop-filter: blur(18px);
+            border: 1px solid rgba(148, 163, 184, 0.08);
+        }
+        .card-hover {
+            transition: all 0.3s ease;
+        }
+        .card-hover:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 18px 35px rgba(15, 23, 42, 0.35);
+        }
+        .badge-pill {
+            padding: 0.25rem 0.6rem;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+        .icon-button {
+            transition: all 0.2s ease;
+        }
+        .icon-button:hover {
+            transform: translateY(-1px) scale(1.02);
+        }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .animate-slide-in {
+            animation: slideIn 0.4s ease-out;
+        }
+        .scrollbar-thin::-webkit-scrollbar {
+            width: 6px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 3px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+    <body class="bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        const APP_SERVER_PORT = parseInt(window.TIP_POOL_APP_PORT || '8000', 10);
+        const CONTROL_SERVER_ORIGIN = window.TIP_POOL_CONTROL_ORIGIN || 'http://localhost:4100';
+
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        async function fetchControlServerStatus() {
+            try {
+                const response = await fetch(`${CONTROL_SERVER_ORIGIN}/server/status`, { mode: 'cors' });
+                if (!response.ok) {
+                    return { ok: false, error: new Error(`Status ${response.status}`) };
+                }
+                const body = await response.json();
+                return { ok: true, body };
+            } catch (error) {
+                return { ok: false, error };
+            }
+        }
+
+        async function ensureAppServerRunning({ retries = 3, waitMs = 600 } = {}) {
+            let lastStatus = null;
+            let lastError = null;
+
+            for (let attempt = 0; attempt <= retries; attempt++) {
+                const statusResult = await fetchControlServerStatus();
+                if (statusResult.ok && statusResult.body.running) {
+                    return { ok: true, status: statusResult.body, attempts: attempt + 1 };
+                }
+
+                if (!statusResult.ok) {
+                    lastError = statusResult.error;
+                } else {
+                    lastStatus = statusResult.body;
+                }
+
+                try {
+                    await fetch(`${CONTROL_SERVER_ORIGIN}/server/start`, {
+                        method: 'POST',
+                        mode: 'cors',
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                } catch (error) {
+                    lastError = error;
+                }
+
+                await wait(waitMs * (attempt + 1));
+            }
+
+            return { ok: false, status: lastStatus, error: lastError };
+        }
+
+        // Google Sheets API Configuration
+        const DISCOVERY_DOCS = ["https://sheets.googleapis.com/$discovery/rest?version=v4"];
+        const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
+
+        // Google Sheets Helper Functions
+        class GoogleSheetsAPI {
+            constructor() {
+                this.gapiLoaded = false;
+                this.gisLoaded = false;
+                this.tokenClient = null;
+                this.accessToken = null;
+            }
+
+            async initialize(clientId, apiKey) {
+                return new Promise((resolve, reject) => {
+                    if (typeof gapi === 'undefined') {
+                        reject('Google API not loaded');
+                        return;
+                    }
+
+                    gapi.load('client', async () => {
+                        try {
+                            await gapi.client.init({
+                                apiKey: apiKey,
+                                discoveryDocs: DISCOVERY_DOCS,
+                            });
+                            this.gapiLoaded = true;
+                            
+                            // Initialize GIS
+                            if (typeof google !== 'undefined' && google.accounts) {
+                                this.tokenClient = google.accounts.oauth2.initTokenClient({
+                                    client_id: clientId,
+                                    scope: SCOPES,
+                                    callback: (response) => {
+                                        if (response.access_token) {
+                                            this.accessToken = response.access_token;
+                                        }
+                                    },
+                                });
+                                this.gisLoaded = true;
+                            }
+                            
+                            resolve(true);
+                        } catch (error) {
+                            reject(error);
+                        }
+                    });
+                });
+            }
+
+            requestAccessToken() {
+                return new Promise((resolve) => {
+                    if (this.tokenClient) {
+                        this.tokenClient.callback = (response) => {
+                            if (response.access_token) {
+                                this.accessToken = response.access_token;
+                                resolve(true);
+                            } else {
+                                resolve(false);
+                            }
+                        };
+                        this.tokenClient.requestAccessToken();
+                    } else {
+                        resolve(false);
+                    }
+                });
+            }
+
+            async readData(spreadsheetId, range) {
+                try {
+                    const response = await gapi.client.sheets.spreadsheets.values.get({
+                        spreadsheetId: spreadsheetId,
+                        range: range,
+                    });
+                    return response.result.values || [];
+                } catch (error) {
+                    console.error('Error reading data:', error);
+                    throw error;
+                }
+            }
+
+            async writeData(spreadsheetId, range, values) {
+                try {
+                    const response = await gapi.client.sheets.spreadsheets.values.update({
+                        spreadsheetId: spreadsheetId,
+                        range: range,
+                        valueInputOption: 'RAW',
+                        resource: { values: values },
+                    });
+                    return response.result;
+                } catch (error) {
+                    console.error('Error writing data:', error);
+                    throw error;
+                }
+            }
+
+            async appendData(spreadsheetId, range, values) {
+                try {
+                    const response = await gapi.client.sheets.spreadsheets.values.append({
+                        spreadsheetId: spreadsheetId,
+                        range: range,
+                        valueInputOption: 'RAW',
+                        insertDataOption: 'INSERT_ROWS',
+                        resource: { values: values },
+                    });
+                    return response.result;
+                } catch (error) {
+                    console.error('Error appending data:', error);
+                    throw error;
+                }
+            }
+
+            async deleteRow(spreadsheetId, sheetId, rowIndex) {
+                try {
+                    const response = await gapi.client.sheets.spreadsheets.batchUpdate({
+                        spreadsheetId: spreadsheetId,
+                        resource: {
+                            requests: [{
+                                deleteDimension: {
+                                    range: {
+                                        sheetId: sheetId,
+                                        dimension: 'ROWS',
+                                        startIndex: rowIndex,
+                                        endIndex: rowIndex + 1,
+                                    },
+                                },
+                            }],
+                        },
+                    });
+                    return response.result;
+                } catch (error) {
+                    console.error('Error deleting row:', error);
+                    throw error;
+                }
+            }
+        }
+
+        const sheetsAPI = new GoogleSheetsAPI();
+
+        // Main App Component
+        function App() {
+            const [view, setView] = useState('list'); // list, create, edit, view
+            const [shifts, setShifts] = useState([]);
+              const [currentShift, setCurrentShift] = useState(null);
+              const [isAuthenticated, setIsAuthenticated] = useState(false);
+              const [config, setConfig] = useState({
+                  clientId: '',
+                  apiKey: '',
+                  spreadsheetId: '',
+                  sheetName: 'Shifts',
+              });
+              const [showConfig, setShowConfig] = useState(true);
+              const [loading, setLoading] = useState(false);
+              const [error, setError] = useState(null);
+              const [serverStatus, setServerStatus] = useState({
+                  state: 'checking',
+                  message: `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
+              });
+
+              useEffect(() => {
+                  let cancelled = false;
+
+                  const bootServer = async () => {
+                      if (typeof fetch === 'undefined') {
+                          if (!cancelled) {
+                              setServerStatus({
+                                  state: 'error',
+                                  message: 'Fetch API is unavailable; cannot communicate with the local control server.',
+                              });
+                          }
+                          return;
+                      }
+
+                      setServerStatus((prev) => ({
+                          state: 'checking',
+                          message: prev.message || `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
+                      }));
+
+                      const result = await ensureAppServerRunning();
+                      if (cancelled) return;
+
+                      if (result.ok) {
+                          setServerStatus({ state: 'ready', message: '' });
+                      } else {
+                          const reason = result.error?.message || 'Control server is not reachable';
+                          setServerStatus({
+                              state: 'error',
+                              message: `Could not auto-start the local server on port ${APP_SERVER_PORT}. ${reason}. Make sure the control server is running at ${CONTROL_SERVER_ORIGIN}.`,
+                          });
+                      }
+                  };
+
+                  bootServer();
+
+                  return () => {
+                      cancelled = true;
+                  };
+              }, []);
+
+            // Load configuration from localStorage
+            useEffect(() => {
+                const savedConfig = localStorage.getItem('tipPoolConfig');
+                if (savedConfig) {
+                    const parsed = JSON.parse(savedConfig);
+                    setConfig(parsed);
+                    if (parsed.clientId && parsed.apiKey) {
+                        setShowConfig(false);
+                        initializeGoogleAPI(parsed);
+                    }
+                }
+            }, []);
+
+            const initializeGoogleAPI = async (cfg) => {
+                try {
+                    await sheetsAPI.initialize(cfg.clientId, cfg.apiKey);
+                    console.log('Google API initialized');
+                } catch (error) {
+                    setError('Failed to initialize Google API: ' + error.message);
+                }
+            };
+
+            const handleAuthenticate = async () => {
+                setLoading(true);
+                setError(null);
+                try {
+                    const success = await sheetsAPI.requestAccessToken();
+                    if (success) {
+                        setIsAuthenticated(true);
+                        await loadShifts();
+                    } else {
+                        setError('Authentication failed');
+                    }
+                } catch (error) {
+                    setError('Authentication error: ' + error.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const saveConfig = () => {
+                localStorage.setItem('tipPoolConfig', JSON.stringify(config));
+                setShowConfig(false);
+                initializeGoogleAPI(config);
+            };
+
+            const loadShifts = async () => {
+                if (!config.spreadsheetId || !isAuthenticated) return;
+                
+                setLoading(true);
+                setError(null);
+                try {
+                    const range = `${config.sheetName}!A2:B`;
+                    const data = await sheetsAPI.readData(config.spreadsheetId, range);
+                    
+                    const loadedShifts = data.map((row, index) => ({
+                        rowIndex: index + 2,
+                        id: row[0] || `shift_${Date.now()}_${index}`,
+                        data: row[1] ? JSON.parse(row[1]) : null,
+                    })).filter(shift => shift.data);
+                    
+                    setShifts(loadedShifts);
+                } catch (error) {
+                    setError('Failed to load shifts: ' + error.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const saveShift = async (shiftData) => {
+                if (!config.spreadsheetId || !isAuthenticated) return;
+                
+                setLoading(true);
+                setError(null);
+                try {
+                    const id = shiftData.id || `shift_${shiftData.date.replace(/-/g, '')}`;
+                    const jsonData = JSON.stringify(shiftData);
+                    
+                    // Check if shift exists
+                    const existingIndex = shifts.findIndex(s => s.id === id);
+                    
+                    if (existingIndex >= 0) {
+                        // Update existing
+                        const range = `${config.sheetName}!A${shifts[existingIndex].rowIndex}:B${shifts[existingIndex].rowIndex}`;
+                        await sheetsAPI.writeData(config.spreadsheetId, range, [[id, jsonData]]);
+                    } else {
+                        // Append new
+                        const range = `${config.sheetName}!A:B`;
+                        await sheetsAPI.appendData(config.spreadsheetId, range, [[id, jsonData]]);
+                    }
+                    
+                    await loadShifts();
+                    setView('list');
+                } catch (error) {
+                    setError('Failed to save shift: ' + error.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const deleteShift = async (shiftId) => {
+                if (!config.spreadsheetId || !isAuthenticated) return;
+                
+                if (!confirm('Are you sure you want to delete this shift?')) return;
+                
+                setLoading(true);
+                setError(null);
+                try {
+                    const shiftIndex = shifts.findIndex(s => s.id === shiftId);
+                    if (shiftIndex >= 0) {
+                        // Note: This is simplified - you'd need the sheet ID for proper deletion
+                        // For now, we'll clear the row and reload
+                        const range = `${config.sheetName}!A${shifts[shiftIndex].rowIndex}:B${shifts[shiftIndex].rowIndex}`;
+                        await sheetsAPI.writeData(config.spreadsheetId, range, [['', '']]);
+                        await loadShifts();
+                    }
+                } catch (error) {
+                    setError('Failed to delete shift: ' + error.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const editShift = (shift) => {
+                setCurrentShift(shift.data);
+                setView('edit');
+            };
+
+            const viewShift = (shift) => {
+                setCurrentShift(shift.data);
+                setView('view');
+            };
+
+            return (
+                <div className="min-h-screen p-4 md:p-8">
+                    <div className="max-w-7xl mx-auto">
+                        {/* Header */}
+                        <header className="glass rounded-2xl shadow-xl p-6 mb-6 animate-slide-in border border-slate-800/40">
+                            <div className="flex items-center justify-between flex-wrap gap-4">
+                                <div className="flex items-center gap-3">
+                                    <div className="bg-gradient-to-br from-cyan-500 to-fuchsia-500 p-3 rounded-xl text-white text-2xl">
+                                        <i className="fas fa-coins"></i>
+                                    </div>
+                                    <div>
+                                        <h1 className="text-3xl font-bold text-slate-100">
+                                            Tip Pool Tracker
+                                        </h1>
+                                        <p className="text-slate-400 text-sm">Track your shifts, tips, and earnings</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    {isAuthenticated && (
+                                        <button
+                                            onClick={() => setView('create')}
+                                            className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-6 py-2.5 rounded-xl hover:shadow-lg hover:shadow-cyan-500/30 transition-all duration-300 flex items-center gap-2"
+                                        >
+                                            <i className="fas fa-plus"></i>
+                                            New Shift
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => setShowConfig(!showConfig)}
+                                        className="bg-slate-900/70 text-slate-200 px-4 py-2.5 rounded-xl hover:bg-slate-800 transition-all duration-300 border border-slate-700"
+                                    >
+                                        <i className="fas fa-cog"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </header>
+
+                        {serverStatus.state !== 'ready' && (
+                            <div
+                                className={`glass rounded-xl shadow-lg p-4 mb-6 border ${
+                                    serverStatus.state === 'error'
+                                        ? 'border-red-500/40 bg-red-500/10'
+                                        : 'border-cyan-500/40 bg-cyan-500/10'
+                                } animate-slide-in`}
+                            >
+                                <div className="flex items-start gap-3">
+                                    <div
+                                        className={`text-xl ${
+                                            serverStatus.state === 'error'
+                                                ? 'text-red-300'
+                                                : 'text-cyan-300'
+                                        }`}
+                                    >
+                                        <i
+                                            className={`fas ${
+                                                serverStatus.state === 'error'
+                                                    ? 'fa-exclamation-triangle'
+                                                    : 'fa-rocket'
+                                            }`}
+                                        ></i>
+                                    </div>
+                                    <div className="flex-1">
+                                        <p className="text-sm font-semibold text-slate-100">
+                                            {serverStatus.state === 'error'
+                                                ? 'Server Not Ready'
+                                                : 'Starting Local Server'}
+                                        </p>
+                                        <p className="text-sm text-slate-300 mt-1">
+                                            {serverStatus.message}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Error Alert */}
+                        {error && (
+                            <div className="glass rounded-xl p-4 mb-6 border border-red-500/30 bg-red-500/10 animate-slide-in">
+                                <div className="flex items-center gap-3">
+                                    <i className="fas fa-exclamation-triangle text-red-300 text-xl"></i>
+                                    <div className="flex-1">
+                                        <p className="text-red-200 font-medium">Error</p>
+                                        <p className="text-red-300 text-sm">{error}</p>
+                                    </div>
+                                    <button onClick={() => setError(null)} className="text-red-300 hover:text-red-100">
+                                        <i className="fas fa-times"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Configuration Panel */}
+                        {showConfig && (
+                            <ConfigPanel
+                                config={config}
+                                setConfig={setConfig}
+                                saveConfig={saveConfig}
+                                isAuthenticated={isAuthenticated}
+                                handleAuthenticate={handleAuthenticate}
+                                loading={loading}
+                            />
+                        )}
+
+                        {/* Main Content */}
+                        {!showConfig && isAuthenticated && (
+                            <>
+                                {view === 'list' && (
+                                    <div className="space-y-6">
+                                        <ShiftList
+                                            shifts={shifts}
+                                            onEdit={editShift}
+                                            onDelete={deleteShift}
+                                            onView={viewShift}
+                                            loading={loading}
+                                            onRefresh={loadShifts}
+                                        />
+                                        <ChartsPanel shifts={shifts} />
+                                    </div>
+                                )}
+                                {view === 'create' && (
+                                    <ShiftForm
+                                        onSave={saveShift}
+                                        onCancel={() => setView('list')}
+                                    />
+                                )}
+                                {view === 'edit' && currentShift && (
+                                    <ShiftForm
+                                        shift={currentShift}
+                                        onSave={saveShift}
+                                        onCancel={() => setView('list')}
+                                    />
+                                )}
+                                {view === 'view' && currentShift && (
+                                    <ShiftDetail
+                                        shift={currentShift}
+                                        onEdit={() => setView('edit')}
+                                        onClose={() => setView('list')}
+                                    />
+                                )}
+                            </>
+                        )}
+
+                        {/* Not Authenticated */}
+                        {!showConfig && !isAuthenticated && (
+                            <div className="glass rounded-2xl shadow-xl p-12 text-center animate-slide-in border border-slate-800/40">
+                                <div className="bg-slate-900/70 w-20 h-20 rounded-full mx-auto mb-6 flex items-center justify-center">
+                                    <i className="fas fa-lock text-4xl text-slate-200"></i>
+                                </div>
+                                <h2 className="text-2xl font-bold text-slate-100 mb-3">Authentication Required</h2>
+                                <p className="text-slate-400 mb-6">Connect to Google Sheets to start tracking your shifts</p>
+                                <button
+                                    onClick={handleAuthenticate}
+                                    disabled={loading}
+                                    className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-8 py-3 rounded-xl hover:shadow-lg hover:shadow-cyan-500/30 transition-all duration-300 disabled:opacity-50"
+                                >
+                                    {loading ? 'Connecting...' : 'Connect Google Sheets'}
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // Configuration Panel Component
+        function ConfigPanel({ config, setConfig, saveConfig, isAuthenticated, handleAuthenticate, loading }) {
+            return (
+                <div className="glass rounded-2xl shadow-xl p-6 mb-6 animate-slide-in border border-slate-800/40">
+                    <h2 className="text-2xl font-bold text-slate-100 mb-4 flex items-center gap-2">
+                        <i className="fas fa-cog text-cyan-300"></i>
+                        Configuration
+                    </h2>
+
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">
+                                Google Client ID
+                            </label>
+                            <input
+                                type="text"
+                                value={config.clientId}
+                                onChange={(e) => setConfig({ ...config, clientId: e.target.value })}
+                                className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-slate-100"
+                                placeholder="Your Google OAuth Client ID"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">
+                                Google API Key
+                            </label>
+                            <input
+                                type="text"
+                                value={config.apiKey}
+                                onChange={(e) => setConfig({ ...config, apiKey: e.target.value })}
+                                className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-slate-100"
+                                placeholder="Your Google API Key"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">
+                                Spreadsheet ID
+                            </label>
+                            <input
+                                type="text"
+                                value={config.spreadsheetId}
+                                onChange={(e) => setConfig({ ...config, spreadsheetId: e.target.value })}
+                                className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-slate-100"
+                                placeholder="Google Sheets ID from URL"
+                            />
+                            <p className="text-xs text-slate-500 mt-1">
+                                Found in the URL: docs.google.com/spreadsheets/d/<span className="font-mono">SPREADSHEET_ID</span>/edit
+                            </p>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">
+                                Sheet Name
+                            </label>
+                            <input
+                                type="text"
+                                value={config.sheetName}
+                                onChange={(e) => setConfig({ ...config, sheetName: e.target.value })}
+                                className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-slate-100"
+                                placeholder="Shifts"
+                            />
+                        </div>
+
+                        <div className="flex gap-3 pt-4">
+                            <button
+                                onClick={saveConfig}
+                                className="flex-1 bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-6 py-2.5 rounded-xl hover:shadow-lg hover:shadow-cyan-500/30 transition-all duration-300"
+                            >
+                                Save Configuration
+                            </button>
+                            {!isAuthenticated && config.clientId && config.apiKey && (
+                                <button
+                                    onClick={handleAuthenticate}
+                                    disabled={loading}
+                                    className="flex-1 bg-emerald-500 text-white px-6 py-2.5 rounded-xl hover:bg-emerald-600 transition-all duration-300 disabled:opacity-50"
+                                >
+                                    {loading ? 'Connecting...' : 'Authenticate'}
+                                </button>
+                            )}
+                        </div>
+
+                        <div className="bg-slate-900/70 border border-slate-700 rounded-xl p-4 mt-4">
+                            <h3 className="font-semibold text-slate-100 mb-2 flex items-center gap-2">
+                                <i className="fas fa-info-circle text-cyan-300"></i>
+                                Setup Instructions
+                            </h3>
+                            <ol className="text-sm text-slate-400 space-y-1 list-decimal list-inside">
+                                <li>Create a Google Cloud Project</li>
+                                <li>Enable Google Sheets API</li>
+                                <li>Create OAuth 2.0 credentials (Web application)</li>
+                                <li>Add authorized JavaScript origin: your domain</li>
+                                <li>Create an API Key with Sheets API access</li>
+                                <li>Create a Google Sheet with columns: ID, JSON Data</li>
+                                <li>Copy the Spreadsheet ID from the URL</li>
+                            </ol>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Shift List Component
+        function ShiftList({ shifts, onEdit, onDelete, onView, loading, onRefresh }) {
+            const [sortBy, setSortBy] = useState('date');
+            const [filterType, setFilterType] = useState('all');
+            const [searchTerm, setSearchTerm] = useState('');
+
+            const filteredShifts = useMemo(() => {
+                let filtered = [...shifts];
+
+                // Filter by type
+                if (filterType !== 'all') {
+                    filtered = filtered.filter(s => s.data.type === filterType);
+                }
+
+                // Search
+                if (searchTerm) {
+                    filtered = filtered.filter(s => 
+                        s.data.date.includes(searchTerm) ||
+                        s.data.myName?.toLowerCase().includes(searchTerm.toLowerCase())
+                    );
+                }
+
+                // Sort
+                filtered.sort((a, b) => {
+                    if (sortBy === 'date') {
+                        return new Date(b.data.date) - new Date(a.data.date);
+                    } else if (sortBy === 'earnings') {
+                        return (b.data.earnings?.total || 0) - (a.data.earnings?.total || 0);
+                    }
+                    return 0;
+                });
+
+                return filtered;
+            }, [shifts, sortBy, filterType, searchTerm]);
+
+            const stats = useMemo(() => {
+                const totalEarnings = shifts.reduce((sum, s) => sum + (s.data.earnings?.total || 0), 0);
+                const totalHours = shifts.reduce((sum, s) => sum + (s.data.summary?.hours || 0), 0);
+                const avgHourly = totalHours > 0 ? totalEarnings / totalHours : 0;
+
+                return { totalEarnings, totalHours, avgHourly, shiftCount: shifts.length };
+            }, [shifts]);
+
+            return (
+                <div className="space-y-6 animate-slide-in">
+                    {/* Stats Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <StatCard
+                            icon="fa-calendar-check"
+                            label="Total Shifts"
+                            value={stats.shiftCount}
+                            gradient="from-blue-500 to-blue-600"
+                        />
+                        <StatCard
+                            icon="fa-dollar-sign"
+                            label="Total Earnings"
+                            value={`$${stats.totalEarnings.toFixed(2)}`}
+                            gradient="from-green-500 to-green-600"
+                        />
+                        <StatCard
+                            icon="fa-clock"
+                            label="Total Hours"
+                            value={stats.totalHours.toFixed(1)}
+                            gradient="from-purple-500 to-purple-600"
+                        />
+                        <StatCard
+                            icon="fa-chart-line"
+                            label="Avg Hourly"
+                            value={`$${stats.avgHourly.toFixed(2)}`}
+                            gradient="from-orange-500 to-orange-600"
+                        />
+                    </div>
+
+                    {/* Filters */}
+                    <div className="glass rounded-xl shadow-lg p-4 border border-slate-800/40">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-2">Search</label>
+                                <input
+                                    type="text"
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    placeholder="Search by date or name..."
+                                    className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 text-slate-100"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-2">Filter by Type</label>
+                                <select
+                                    value={filterType}
+                                    onChange={(e) => setFilterType(e.target.value)}
+                                    className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 text-slate-100"
+                                >
+                                    <option value="all">All Shifts</option>
+                                    <option value="day">Day Shifts</option>
+                                    <option value="night">Night Shifts</option>
+                                    <option value="double">Double Shifts</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-2">Sort By</label>
+                                <select
+                                    value={sortBy}
+                                    onChange={(e) => setSortBy(e.target.value)}
+                                    className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 text-slate-100"
+                                >
+                                    <option value="date">Date (Newest First)</option>
+                                    <option value="earnings">Earnings (Highest First)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button
+                            onClick={onRefresh}
+                            disabled={loading}
+                            className="mt-4 w-full bg-slate-900/70 text-cyan-200 px-4 py-2 rounded-xl border border-slate-700 hover:border-cyan-500 transition-all duration-300 disabled:opacity-50"
+                        >
+                            <i className="fas fa-sync-alt mr-2"></i>
+                            {loading ? 'Refreshing...' : 'Refresh Data'}
+                        </button>
+                    </div>
+
+                    {/* Shift Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {filteredShifts.length === 0 ? (
+                            <div className="col-span-full glass rounded-xl p-12 text-center border border-slate-800/40">
+                                <i className="fas fa-inbox text-6xl text-slate-600 mb-4"></i>
+                                <p className="text-slate-300 text-lg">No shifts found</p>
+                                <p className="text-slate-500 text-sm">Create your first shift to get started</p>
+                            </div>
+                        ) : (
+                            filteredShifts.map((shift) => (
+                                <ShiftCard
+                                    key={shift.id}
+                                    shift={shift}
+                                    onView={() => onView(shift)}
+                                    onEdit={() => onEdit(shift)}
+                                    onDelete={() => onDelete(shift.id)}
+                                />
+                            ))
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function ChartsPanel({ shifts }) {
+            const lineRef = useRef(null);
+            const lineChartRef = useRef(null);
+            const barRef = useRef(null);
+            const barChartRef = useRef(null);
+            const [chartSpan, setChartSpan] = useState(14);
+
+            const spanOptions = [7, 14, 30, 60];
+
+            const recentShifts = useMemo(() => {
+                const sorted = [...shifts].sort((a, b) => new Date(a.data.date) - new Date(b.data.date));
+                return sorted.slice(-chartSpan);
+            }, [shifts, chartSpan]);
+
+            useEffect(() => {
+                if (!window.Chart || !lineRef.current) return;
+
+                const labels = recentShifts.map((shift) => new Date(shift.data.date).toLocaleDateString());
+                const hourlySeries = recentShifts.map((shift) => shift.data.summary?.hourly || 0);
+                const tipsPerHourSeries = recentShifts.map((shift) => shift.data.summary?.tips?.actual?.perHour || 0);
+
+                const ctx = lineRef.current.getContext('2d');
+                if (lineChartRef.current) {
+                    lineChartRef.current.destroy();
+                }
+                lineChartRef.current = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [
+                            {
+                                label: 'Hourly Earnings',
+                                data: hourlySeries,
+                                borderColor: '#22d3ee',
+                                backgroundColor: 'rgba(34, 211, 238, 0.15)',
+                                tension: 0.35,
+                                fill: true,
+                            },
+                            {
+                                label: 'Tips per Hour',
+                                data: tipsPerHourSeries,
+                                borderColor: '#c084fc',
+                                backgroundColor: 'rgba(192, 132, 252, 0.15)',
+                                tension: 0.35,
+                                fill: true,
+                            },
+                        ],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                ticks: { color: '#94a3b8' },
+                                grid: { color: 'rgba(148, 163, 184, 0.2)' },
+                            },
+                            y: {
+                                ticks: { color: '#94a3b8' },
+                                grid: { color: 'rgba(148, 163, 184, 0.2)' },
+                                beginAtZero: true,
+                            },
+                        },
+                        plugins: {
+                            legend: {
+                                labels: { color: '#e2e8f0' },
+                            },
+                            tooltip: {
+                                backgroundColor: '#0f172a',
+                                borderColor: '#22d3ee',
+                                borderWidth: 1,
+                            },
+                        },
+                    },
+                });
+
+                return () => {
+                    if (lineChartRef.current) {
+                        lineChartRef.current.destroy();
+                        lineChartRef.current = null;
+                    }
+                };
+            }, [recentShifts]);
+
+            useEffect(() => {
+                if (!window.Chart || !barRef.current) return;
+
+                const ctx = barRef.current.getContext('2d');
+                if (barChartRef.current) {
+                    barChartRef.current.destroy();
+                }
+
+                const earningsBars = shifts.slice(-8).map((shift) => shift.data.earnings || {});
+                const barLabels = shifts.slice(-8).map((shift) => new Date(shift.data.date).toLocaleDateString());
+
+                barChartRef.current = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: barLabels,
+                        datasets: [
+                            {
+                                label: 'Tips',
+                                data: earningsBars.map((earn) => earn.tips || 0),
+                                backgroundColor: 'rgba(34, 211, 238, 0.6)',
+                            },
+                            {
+                                label: 'Wage',
+                                data: earningsBars.map((earn) => earn.wage || 0),
+                                backgroundColor: 'rgba(192, 132, 252, 0.6)',
+                            },
+                            {
+                                label: 'Other',
+                                data: earningsBars.map((earn) => (earn.total || 0) - (earn.tips || 0) - (earn.wage || 0)),
+                                backgroundColor: 'rgba(74, 222, 128, 0.6)',
+                            },
+                        ],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                stacked: true,
+                                ticks: { color: '#94a3b8' },
+                                grid: { color: 'rgba(148, 163, 184, 0.15)' },
+                            },
+                            y: {
+                                stacked: true,
+                                ticks: { color: '#94a3b8' },
+                                grid: { color: 'rgba(148, 163, 184, 0.15)' },
+                                beginAtZero: true,
+                            },
+                        },
+                        plugins: {
+                            legend: {
+                                labels: { color: '#e2e8f0' },
+                            },
+                            tooltip: {
+                                backgroundColor: '#0f172a',
+                                borderColor: '#38bdf8',
+                                borderWidth: 1,
+                            },
+                        },
+                    },
+                });
+
+                return () => {
+                    if (barChartRef.current) {
+                        barChartRef.current.destroy();
+                        barChartRef.current = null;
+                    }
+                };
+            }, [shifts]);
+
+            return (
+                <div className="glass rounded-2xl shadow-xl p-6 border border-slate-800/40 space-y-6">
+                    <div className="flex items-center justify-between flex-wrap gap-3">
+                        <div>
+                            <h3 className="text-lg font-semibold text-slate-100">Shift Analytics</h3>
+                            <span className="text-xs uppercase tracking-widest text-slate-500">Last {recentShifts.length} Shifts</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            {spanOptions.map((option) => (
+                                <button
+                                    key={option}
+                                    type="button"
+                                    onClick={() => setChartSpan(option)}
+                                    className={`text-xs px-3 py-1.5 rounded-lg border transition ${
+                                        chartSpan === option
+                                            ? 'border-cyan-400 bg-cyan-500/20 text-cyan-100'
+                                            : 'border-slate-700 bg-slate-900/60 text-slate-400 hover:border-slate-500'
+                                    }`}
+                                >
+                                    {option}d
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {recentShifts.length === 0 ? (
+                        <p className="text-sm text-slate-500">Add a few shifts to unlock charts.</p>
+                    ) : (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <div className="bg-slate-900/60 border border-slate-800/60 rounded-2xl p-4 h-72">
+                                <h4 className="text-sm text-slate-300 mb-3">Hourly Earnings vs Tips</h4>
+                                <canvas ref={lineRef}></canvas>
+                            </div>
+                            <div className="bg-slate-900/60 border border-slate-800/60 rounded-2xl p-4 h-72">
+                                <h4 className="text-sm text-slate-300 mb-3">Recent Earnings Breakdown</h4>
+                                <canvas ref={barRef}></canvas>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Stat Card Component
+        function StatCard({ icon, label, value, gradient }) {
+            return (
+                <div className="glass rounded-xl shadow-lg p-6 card-hover border border-slate-800/40">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">{label}</p>
+                            <p className="text-2xl font-bold text-slate-100">{value}</p>
+                        </div>
+                        <div className={`bg-gradient-to-br ${gradient} p-3 rounded-lg text-white text-xl`}>
+                            <i className={`fas ${icon}`}></i>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Shift Card Component
+        function ShiftCard({ shift, onView, onEdit, onDelete }) {
+            const data = shift.data;
+            const shiftTypeColors = {
+                day: 'from-yellow-400 to-orange-500',
+                night: 'from-indigo-500 to-purple-600',
+                double: 'from-pink-500 to-red-500',
+            };
+
+            return (
+                <div className="glass rounded-xl shadow-lg overflow-hidden card-hover border border-slate-800/40">
+                    <div className={`bg-gradient-to-r ${shiftTypeColors[data.type]} p-4`}>
+                        <div className="flex items-center justify-between">
+                            <div className="text-white">
+                                <p className="text-sm opacity-80">{new Date(data.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</p>
+                                <p className="text-2xl font-semibold">{data.type.charAt(0).toUpperCase() + data.type.slice(1)} Shift</p>
+                            </div>
+                            <div className="bg-white/20 px-3 py-1 rounded-full">
+                                <p className="text-white text-sm font-semibold">{data.myName}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="p-4 space-y-3">
+                        <div className="flex justify-between items-center">
+                            <span className="text-slate-400 text-sm">Total Earnings</span>
+                            <span className="text-xl font-bold text-emerald-300">
+                                ${(data.earnings?.total || 0).toFixed(2)}
+                            </span>
+                        </div>
+
+                        <div className="flex justify-between items-center">
+                            <span className="text-slate-400 text-sm">Hours Worked</span>
+                            <span className="font-semibold text-slate-100">
+                                {(data.summary?.hours || 0).toFixed(1)}h
+                            </span>
+                        </div>
+
+                        <div className="flex justify-between items-center">
+                            <span className="text-slate-400 text-sm">Hourly Rate</span>
+                            <span className="font-semibold text-slate-100">
+                                ${(data.summary?.hourly || 0).toFixed(2)}/hr
+                            </span>
+                        </div>
+
+                        <div className="flex justify-between items-center pt-2 border-t border-slate-800/60">
+                            <span className="text-slate-400 text-sm">Tips</span>
+                            <span className="font-semibold text-cyan-300">
+                                ${(data.tips?._total || 0).toFixed(2)}
+                            </span>
+                        </div>
+
+                        <div className="flex gap-2 pt-3">
+                            <button
+                                onClick={onView}
+                                className="flex-1 bg-slate-900/70 border border-slate-700 text-slate-200 px-4 py-2 rounded-xl hover:border-cyan-500 transition-all duration-300 text-sm"
+                            >
+                                <i className="fas fa-eye mr-2"></i>View
+                            </button>
+                            <button
+                                onClick={onEdit}
+                                className="flex-1 bg-slate-900/70 border border-slate-700 text-slate-200 px-4 py-2 rounded-xl hover:border-fuchsia-500 transition-all duration-300 text-sm"
+                            >
+                                <i className="fas fa-edit mr-2"></i>Edit
+                            </button>
+                            <button
+                                onClick={onDelete}
+                                className="bg-red-500/80 text-white px-4 py-2 rounded-xl hover:bg-red-500 transition-all duration-300 text-sm"
+                            >
+                                <i className="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const SHIFT_TYPE_META = {
+            day: {
+                icon: 'fa-sun',
+                label: 'Day Shift',
+                accent: 'from-amber-400 to-orange-500'
+            },
+            night: {
+                icon: 'fa-moon',
+                label: 'Night Shift',
+                accent: 'from-indigo-500 to-purple-600'
+            },
+            double: {
+                icon: 'fa-infinity',
+                label: 'Double Shift',
+                accent: 'from-fuchsia-500 to-cyan-500'
+            }
+        };
+
+        const DEFAULT_SHIFT_TEMPLATE = {
+            id: '',
+            date: new Date().toISOString().split('T')[0],
+            type: 'night',
+            myName: '',
+            time: {
+                base: { start: '', end: '', hours: 0 },
+                present: { start: '', end: '', hours: 0 },
+                clock: null,
+                tips: null,
+                working: null,
+            },
+            wage: { base: 5.0, hours: 0, total: 0 },
+            tips: { _total: 0 },
+            cuts: {},
+            coworkers: { bartenders: {}, servers: {} },
+            coworkerStats: {
+                serversCount: '',
+                serverStart: '',
+                serverEndBatch: '',
+            },
+            parties: {},
+            chump: {
+                played: false,
+                amount: { total: 0, bills: 0, coins: 0 },
+                players: [],
+                winner: '',
+                notes: ''
+            },
+            overtime: 0,
+            consideration: { items: [], net: 0 },
+            swindle: { total: 0, movements: [], net: {} },
+            drinking: { items: [], totalSBE: 0 },
+            earnings: {
+                tips: 0,
+                wage: 0,
+                overtime: 0,
+                chump: 0,
+                consideration: 0,
+                swindle: 0,
+                total: 0,
+            },
+            summary: {
+                earnings: 0,
+                hours: 0,
+                hourly: 0,
+                tips: {
+                    actual: { total: 0, perHour: 0 },
+                },
+            },
+            meta: {
+                tipsPending: false,
+                chumpLogged: false,
+                notes: '',
+            },
+        };
+
+        function deepMergeShift(template, override) {
+            const clone = JSON.parse(JSON.stringify(template));
+            if (!override) return clone;
+
+            const merge = (target, source) => {
+                Object.entries(source || {}).forEach(([key, value]) => {
+                    if (value && typeof value === 'object' && !Array.isArray(value)) {
+                        target[key] = merge(target[key] ? { ...target[key] } : {}, value);
+                    } else {
+                        target[key] = value;
+                    }
+                });
+                return target;
+            };
+
+            return merge(clone, override);
+        }
+
+        function calculateHoursBetween(start, end) {
+            if (!start || !end) return 0;
+            const [startHour, startMin] = start.split(':').map(Number);
+            const [endHour, endMin] = end.split(':').map(Number);
+            let hours = endHour - startHour + (endMin - startMin) / 60;
+            if (hours < 0) hours += 24;
+            return Math.round(hours * 100) / 100;
+        }
+
+        function ensureCutSkeleton(type, parties, existingCuts) {
+            const baseCuts = type === 'day' ? ['day', 'mid'] : type === 'night' ? ['night'] : ['day', 'mid', 'night'];
+            const partyKeys = Object.keys(parties || {});
+            const requiredKeys = [...new Set([...baseCuts, ...partyKeys])];
+            const cuts = { ...existingCuts };
+            let changed = false;
+
+            requiredKeys.forEach((key) => {
+                if (!cuts[key]) {
+                    changed = true;
+                    cuts[key] = {
+                        label: key.startsWith('party_') ? (parties?.[key]?.name || 'Party Cut') : key.charAt(0).toUpperCase() + key.slice(1),
+                        me: { tips: '', hours: '' },
+                        total: { tips: '', hours: '' },
+                        share: { pct: '', people: '', notes: '' },
+                        status: 'pending',
+                    };
+                }
+            });
+
+            return changed ? cuts : existingCuts;
+        }
+
+        // Shift Form Component (Hybrid Dark UI)
+        function ShiftForm({ shift, onSave, onCancel }) {
+            const [formData, setFormData] = useState(() => deepMergeShift(DEFAULT_SHIFT_TEMPLATE, shift));
+            const [panelOpen, setPanelOpen] = useState({
+                timings: false,
+                cuts: false,
+                coworkers: false,
+                parties: false,
+                enhancements: false,
+                drinking: false,
+            });
+
+            useEffect(() => {
+                setFormData(deepMergeShift(DEFAULT_SHIFT_TEMPLATE, shift));
+            }, [shift]);
+
+            useEffect(() => {
+                setFormData((prev) => {
+                    const nextCuts = ensureCutSkeleton(prev.type, prev.parties, prev.cuts);
+                    if (nextCuts === prev.cuts) return prev;
+                    return { ...prev, cuts: nextCuts };
+                });
+            }, [formData.type, Object.keys(formData.parties || {}).join('|')]);
+
+            const togglePanel = (panel) => {
+                setPanelOpen((prev) => ({ ...prev, [panel]: !prev[panel] }));
+            };
+
+            const updateFormPath = (path, value) => {
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    const keys = path.split('.');
+                    let cursor = next;
+                    for (let i = 0; i < keys.length - 1; i += 1) {
+                        const key = keys[i];
+                        if (!cursor[key] || typeof cursor[key] !== 'object') {
+                            cursor[key] = {};
+                        }
+                        cursor = cursor[key];
+                    }
+                    cursor[keys[keys.length - 1]] = value;
+                    return next;
+                });
+            };
+
+            const handlePrimaryTimeChange = (field, value) => {
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.time.base[field] = value;
+                    if (next.time.base.start && next.time.base.end) {
+                        const hours = calculateHoursBetween(next.time.base.start, next.time.base.end);
+                        next.time.base.hours = hours;
+                        next.wage.hours = hours;
+                        next.wage.total = parseFloat((next.wage.base * hours).toFixed(2));
+                        next.summary.hours = hours;
+                    }
+                    return next;
+                });
+            };
+
+            const handleTipsChange = (value) => {
+                const tipsAmount = parseFloat(value) || 0;
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.tips._total = tipsAmount;
+                    next.earnings.tips = tipsAmount;
+                    return next;
+                });
+            };
+
+            const handleAddParty = () => {
+                const partyId = `party_${(formData.date || '').replace(/-/g, '') || 'temp'}_${Date.now().toString(36)}`;
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.parties = next.parties || {};
+                    next.parties[partyId] = {
+                        id: partyId,
+                        name: 'New Party',
+                        type: '',
+                        cutType: prev.type === 'night' ? 'night' : 'day',
+                        location: '',
+                        time: { start: '', end: '', duration: null },
+                        size: '',
+                        packages: { drink: '', food: '' },
+                        tips: {},
+                        workers: { primary: '', supplement: [] },
+                        notes: '',
+                    };
+                    return next;
+                });
+                setPanelOpen((prev) => ({ ...prev, parties: true, cuts: true }));
+            };
+
+            const handleAddCut = () => {
+                const cutKey = `custom_${Date.now().toString(36)}`;
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.cuts = next.cuts || {};
+                    next.cuts[cutKey] = {
+                        label: 'Custom Cut',
+                        me: { tips: '', hours: '' },
+                        total: { tips: '', hours: '' },
+                        share: { pct: '', people: '', notes: '' },
+                        status: 'pending',
+                    };
+                    return next;
+                });
+                setPanelOpen((prev) => ({ ...prev, cuts: true }));
+            };
+
+            const handleAddSwindleMovement = () => {
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.swindle.movements = next.swindle.movements || [];
+                    next.swindle.movements.push({ from: '', to: '', amount: '', note: '' });
+                    return next;
+                });
+            };
+
+            const handleAddConsideration = () => {
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.consideration.items = next.consideration.items || [];
+                    next.consideration.items.push({ from: '', amount: '', reason: '' });
+                    return next;
+                });
+            };
+
+            const handleAddDrinkingItem = () => {
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.drinking.items = next.drinking.items || [];
+                    next.drinking.items.push({ name: '', code: '', abv: '', oz: '', sbe: '', type: '', quantity: 1 });
+                    return next;
+                });
+                setPanelOpen((prev) => ({ ...prev, drinking: true }));
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    const hours = next.time.base.hours || calculateHoursBetween(next.time.base.start, next.time.base.end);
+                    const tipsTotal = parseFloat(next.tips._total) || 0;
+                    const wageTotal = parseFloat(next.wage.total) || 0;
+                    const overtime = parseFloat(next.earnings.overtime || next.overtime || 0) || 0;
+                    const chump = parseFloat(next.earnings.chump || 0) || 0;
+                    const consideration = parseFloat(next.earnings.consideration || next.consideration.net || 0) || 0;
+                    const swindle = parseFloat(next.earnings.swindle || next.swindle.total || 0) || 0;
+
+                    const totalEarnings = parseFloat((tipsTotal + wageTotal + overtime + chump + consideration + swindle).toFixed(2));
+                    const hourlyRate = hours > 0 ? parseFloat((totalEarnings / hours).toFixed(2)) : 0;
+
+                    next.time.base.hours = hours;
+                    next.wage.hours = hours;
+                    next.summary.hours = hours;
+
+                    next.earnings = {
+                        tips: tipsTotal,
+                        wage: wageTotal,
+                        overtime,
+                        chump,
+                        consideration,
+                        swindle,
+                        total: totalEarnings,
+                    };
+
+                    next.summary.earnings = totalEarnings;
+                    next.summary.hourly = hourlyRate;
+                    next.summary.tips.actual = {
+                        total: tipsTotal,
+                        perHour: hours > 0 ? parseFloat((tipsTotal / hours).toFixed(2)) : 0,
+                    };
+
+                    const payload = {
+                        ...next,
+                        id: next.id || `shift_${(next.date || '').replace(/-/g, '')}`,
+                    };
+                    onSave(payload);
+                    return next;
+                });
+            };
+
+            const calculatedHours = formData.time.base.hours || calculateHoursBetween(formData.time.base.start, formData.time.base.end);
+            const wageTotal = formData.wage.total || (formData.wage.base || 0) * (calculatedHours || 0);
+            const overtimeTotal = formData.earnings.overtime || formData.overtime || 0;
+            const chumpTotal = formData.earnings.chump || 0;
+            const considerationTotal = formData.earnings.consideration || formData.consideration?.net || 0;
+            const swindleTotal = formData.earnings.swindle || formData.swindle?.total || 0;
+            const displayedEarnings = formData.earnings.total || parseFloat(((formData.tips._total || 0) + wageTotal + overtimeTotal + chumpTotal + considerationTotal + swindleTotal).toFixed(2));
+            const displayedHourly = formData.summary.hourly || (calculatedHours > 0 ? parseFloat((displayedEarnings / calculatedHours).toFixed(2)) : 0);
+            const tipsPerHour = formData.summary.tips?.actual?.perHour || (calculatedHours > 0 ? parseFloat(((formData.tips._total || 0) / calculatedHours).toFixed(2)) : 0);
+
+            const shiftTypeMeta = SHIFT_TYPE_META[formData.type] || SHIFT_TYPE_META.night;
+            const partyCount = Object.keys(formData.parties || {}).length;
+            const bartenderCount = Object.keys(formData.coworkers?.bartenders || {}).length;
+            const serverCount = Object.keys(formData.coworkers?.servers || {}).length;
+            const coworkerCount = bartenderCount + serverCount + (parseInt(formData.coworkerStats?.serversCount, 10) || 0);
+            const chumpStatus = formData.chump?.played ? (formData.chump.winner ? 'recorded' : 'pending') : 'not-played';
+
+            const quickPanels = [
+                {
+                    key: 'cuts',
+                    icon: 'fa-chart-pie',
+                    label: 'Cuts',
+                    metric: Object.keys(formData.cuts || {}).length,
+                    status: Object.values(formData.cuts || {}).some((cut) => cut?.me?.tips) ? 'ok' : 'pending',
+                },
+                {
+                    key: 'parties',
+                    icon: 'fa-glass-cheers',
+                    label: 'Parties',
+                    metric: partyCount,
+                    status: partyCount > 0 ? 'ok' : 'none',
+                },
+                {
+                    key: 'coworkers',
+                    icon: 'fa-people-group',
+                    label: 'Crew',
+                    metric: coworkerCount,
+                    status: coworkerCount > 0 ? 'ok' : 'pending',
+                },
+                {
+                    key: 'enhancements',
+                    icon: 'fa-sliders',
+                    label: 'Enhancements',
+                    metric: '',
+                    status: (formData.overtime || formData.consideration.items?.length || formData.swindle.movements?.length) ? 'ok' : 'none',
+                },
+                {
+                    key: 'drinking',
+                    icon: 'fa-wine-glass',
+                    label: 'Drinks',
+                    metric: formData.drinking?.items?.length || 0,
+                    status: formData.drinking?.items?.length ? 'ok' : 'none',
+                },
+            ];
+
+            const statusBadgeClass = (status) => {
+                switch (status) {
+                    case 'ok':
+                        return 'bg-emerald-400/80 shadow-emerald-300/30';
+                    case 'pending':
+                        return 'bg-amber-400/80 shadow-amber-300/30';
+                    case 'none':
+                    default:
+                        return 'bg-slate-600/70 shadow-slate-500/20';
+                }
+            };
+
+            return (
+                <div className="max-w-5xl mx-auto">
+                    <div className="glass rounded-3xl shadow-2xl overflow-hidden animate-slide-in border border-slate-800/40">
+                        <div className={`bg-gradient-to-r ${shiftTypeMeta.accent} px-8 py-6 flex items-center justify-between`}>
+                            <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-white text-2xl">
+                                    <i className={`fas ${shiftTypeMeta.icon}`}></i>
+                                </div>
+                                <div>
+                                    <p className="text-xs uppercase tracking-widest text-white/80">{shift ? 'Editing Shift' : 'New Shift'}</p>
+                                    <h2 className="text-3xl font-semibold text-white">{shiftTypeMeta.label}</h2>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {formData.meta?.tipsPending && (
+                                    <span className="badge-pill bg-amber-400/30 text-amber-200 border border-amber-300/30">
+                                        Tips Pending
+                                    </span>
+                                )}
+                                <button
+                                    onClick={onCancel}
+                                    type="button"
+                                    className="icon-button text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10"
+                                >
+                                    <i className="fas fa-times text-xl"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <form onSubmit={handleSubmit} className="px-8 py-8 space-y-8">
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                <div className="lg:col-span-2">
+                                    <label className="text-sm uppercase tracking-wide text-slate-400">Date</label>
+                                    <input
+                                        type="date"
+                                        value={formData.date}
+                                        onChange={(e) => updateFormPath('date', e.target.value)}
+                                        className="mt-2 w-full px-6 py-4 bg-slate-900/60 border border-slate-700 rounded-2xl text-lg focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-sm uppercase tracking-wide text-slate-400">Shift Type</label>
+                                    <div className="mt-2 grid grid-cols-3 gap-2">
+                                        {Object.entries(SHIFT_TYPE_META).map(([key, meta]) => (
+                                            <button
+                                                key={key}
+                                                type="button"
+                                                onClick={() => updateFormPath('type', key)}
+                                                className={`px-4 py-3 rounded-2xl border text-sm font-medium flex items-center justify-center gap-2 transition ${
+                                                    formData.type === key
+                                                        ? 'bg-cyan-500/20 border-cyan-400 text-cyan-100'
+                                                        : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:border-slate-500'
+                                                }`}
+                                            >
+                                                <i className={`fas ${meta.icon}`}></i>
+                                                <span>{meta.label.split(' ')[0]}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                <div className="md:col-span-1">
+                                    <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
+                                        Start Time
+                                        <button type="button" onClick={() => togglePanel('timings')} className="text-slate-500 hover:text-cyan-300">
+                                            <i className="fas fa-clock"></i>
+                                        </button>
+                                    </label>
+                                    <input
+                                        type="time"
+                                        value={formData.time.base.start}
+                                        onChange={(e) => handlePrimaryTimeChange('start', e.target.value)}
+                                        className="mt-2 w-full px-5 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-2xl tracking-wide focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                        required
+                                    />
+                                </div>
+                                <div className="md:col-span-1">
+                                    <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
+                                        End Time
+                                        <button type="button" onClick={() => togglePanel('timings')} className="text-slate-500 hover:text-cyan-300">
+                                            <i className="fas fa-business-time"></i>
+                                        </button>
+                                    </label>
+                                    <input
+                                        type="time"
+                                        value={formData.time.base.end}
+                                        onChange={(e) => handlePrimaryTimeChange('end', e.target.value)}
+                                        className="mt-2 w-full px-5 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-2xl tracking-wide focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                        required
+                                    />
+                                </div>
+                                <div className="md:col-span-1">
+                                    <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
+                                        <span>Tips</span>
+                                        <button
+                                            type="button"
+                                            onClick={() => updateFormPath('meta.tipsPending', !formData.meta?.tipsPending)}
+                                            className={`text-xs px-2 py-1 rounded-lg border ${formData.meta?.tipsPending ? 'border-amber-400 text-amber-200 bg-amber-400/10' : 'border-slate-600 text-slate-400 hover:border-slate-400'}`}
+                                        >
+                                            {formData.meta?.tipsPending ? 'Mark Received' : 'Mark Pending'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => togglePanel('cuts')}
+                                            className="icon-button text-slate-500 hover:text-cyan-300"
+                                            title="Open cuts"
+                                        >
+                                            <i className="fas fa-layer-group"></i>
+                                        </button>
+                                    </label>
+                                    <div className="mt-2 relative">
+                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-2xl">$</span>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            value={formData.tips._total}
+                                            onChange={(e) => handleTipsChange(e.target.value)}
+                                            className="w-full pl-12 pr-4 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-3xl font-semibold focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                            placeholder="0.00"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                                <div className="glass rounded-2xl p-4 border border-slate-800/60">
+                                    <p className="text-xs uppercase tracking-widest text-slate-500">Total Earnings</p>
+                                    <p className="mt-2 text-3xl font-semibold text-cyan-300">${displayedEarnings.toFixed(2)}</p>
+                                    <p className="text-xs text-slate-500 mt-1">Includes tips, wage, adjustments</p>
+                                </div>
+                                <div className="glass rounded-2xl p-4 border border-slate-800/60">
+                                    <p className="text-xs uppercase tracking-widest text-slate-500">Hours</p>
+                                    <p className="mt-2 text-3xl font-semibold text-emerald-300">{(calculatedHours || 0).toFixed(1)}h</p>
+                                    <p className="text-xs text-slate-500 mt-1">{formData.time.base.start || '--:--'} &rarr; {formData.time.base.end || '--:--'}</p>
+                                </div>
+                                <div className="glass rounded-2xl p-4 border border-slate-800/60">
+                                    <p className="text-xs uppercase tracking-widest text-slate-500">Hourly</p>
+                                    <p className="mt-2 text-3xl font-semibold text-indigo-300">${displayedHourly.toFixed(2)}</p>
+                                    <p className="text-xs text-slate-500 mt-1">Tips/hr ${tipsPerHour.toFixed(2)}</p>
+                                </div>
+                                <div className="glass rounded-2xl p-4 border border-slate-800/60 flex flex-col gap-3">
+                                    <div className="flex items-center gap-2">
+                                        <i className="fas fa-dice text-sm text-slate-400"></i>
+                                        <span className="text-xs uppercase tracking-widest text-slate-500">Chump</span>
+                                        <span className={`badge-pill ${
+                                            chumpStatus === 'recorded'
+                                                ? 'bg-emerald-400/20 text-emerald-200 border border-emerald-400/40'
+                                                : chumpStatus === 'pending'
+                                                    ? 'bg-amber-400/20 text-amber-200 border border-amber-400/40'
+                                                    : 'bg-slate-800 text-slate-400 border border-slate-700'
+                                        }`}>
+                                            {chumpStatus === 'recorded' ? 'Logged' : chumpStatus === 'pending' ? 'Result Pending' : 'Not Played'}
+                                        </span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => togglePanel('enhancements')}
+                                        className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
+                                    >
+                                        Manage Enhancements
+                                        <i className="fas fa-arrow-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-wrap gap-3">
+                                {quickPanels.map((panel) => (
+                                    <button
+                                        key={panel.key}
+                                        type="button"
+                                        onClick={() => togglePanel(panel.key)}
+                                        className={`icon-button glass px-4 py-3 rounded-2xl flex items-center gap-3 border border-slate-800/60 ${panelOpen[panel.key] ? 'ring-2 ring-cyan-500/40' : ''}`}
+                                    >
+                                        <div className="relative">
+                                            <span className="w-8 h-8 rounded-xl bg-slate-900/70 flex items-center justify-center text-cyan-300">
+                                                <i className={`fas ${panel.icon}`}></i>
+                                            </span>
+                                            <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full shadow ${statusBadgeClass(panel.status)}`}></span>
+                                        </div>
+                                        <div className="text-left">
+                                            <p className="text-xs uppercase tracking-wider text-slate-400">{panel.label}</p>
+                                            <p className="text-sm font-semibold text-slate-200">{panel.metric || '—'}</p>
+                                        </div>
+                                        <i className={`fas fa-chevron-${panelOpen[panel.key] ? 'up' : 'down'} text-slate-600`}></i>
+                                    </button>
+                                ))}
+                                <button
+                                    type="button"
+                                    onClick={handleAddParty}
+                                    className="icon-button glass px-4 py-3 rounded-2xl flex items-center gap-2 text-slate-200 border border-slate-800/60 hover:border-cyan-500/50"
+                                >
+                                    <i className="fas fa-plus"></i>
+                                    Quick Add Party
+                                </button>
+                            </div>
+
+                            {panelOpen.timings && (
+                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-lg font-semibold text-slate-100">Timing Buckets</h3>
+                                        <button onClick={() => togglePanel('timings')} type="button" className="text-slate-500 hover:text-slate-200">
+                                            <i className="fas fa-xmark"></i>
+                                        </button>
+                                    </div>
+                                    {['present', 'clock', 'tips', 'working'].map((bucket) => (
+                                        <div key={bucket} className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+                                            <div className="md:col-span-1">
+                                                <p className="text-xs uppercase tracking-wider text-slate-500">{bucket.toUpperCase()}</p>
+                                            </div>
+                                            <div className="md:col-span-1">
+                                                <label className="text-xs text-slate-500">Start</label>
+                                                <input
+                                                    type="time"
+                                                    value={formData.time[bucket]?.start || ''}
+                                                    onChange={(e) => updateFormPath(`time.${bucket}.start`, e.target.value)}
+                                                    className="mt-1 w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                />
+                                            </div>
+                                            <div className="md:col-span-1">
+                                                <label className="text-xs text-slate-500">End</label>
+                                                <input
+                                                    type="time"
+                                                    value={formData.time[bucket]?.end || ''}
+                                                    onChange={(e) => updateFormPath(`time.${bucket}.end`, e.target.value)}
+                                                    className="mt-1 w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                />
+                                            </div>
+                                            <div className="md:col-span-1">
+                                                <label className="text-xs text-slate-500">Hours</label>
+                                                <input
+                                                    type="number"
+                                                    step="0.25"
+                                                    value={formData.time[bucket]?.hours || ''}
+                                                    onChange={(e) => updateFormPath(`time.${bucket}.hours`, parseFloat(e.target.value) || 0)}
+                                                    className="mt-1 w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                />
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {panelOpen.cuts && (
+                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-lg font-semibold text-slate-100">Cuts</h3>
+                                        <button type="button" onClick={handleAddCut} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
+                                            <i className="fas fa-plus"></i>
+                                            Custom Cut
+                                        </button>
+                                    </div>
+                                    {Object.entries(formData.cuts || {}).map(([key, cut]) => (
+                                        <div key={key} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
+                                            <div className="flex flex-wrap items-center gap-3 justify-between">
+                                                <div className="flex items-center gap-3">
+                                                    <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
+                                                        {cut.label || key.toUpperCase()}
+                                                    </span>
+                                                    <input
+                                                        type="text"
+                                                        value={cut.label || ''}
+                                                        onChange={(e) => updateFormPath(`cuts.${key}.label`, e.target.value)}
+                                                        className="px-3 py-1.5 bg-transparent border-b border-slate-700 text-sm"
+                                                        placeholder="Label"
+                                                    />
+                                                </div>
+                                                <select
+                                                    value={cut.status || 'pending'}
+                                                    onChange={(e) => updateFormPath(`cuts.${key}.status`, e.target.value)}
+                                                    className="px-3 py-1.5 bg-slate-900/60 border border-slate-700 rounded-xl text-xs"
+                                                >
+                                                    <option value="pending">Pending</option>
+                                                    <option value="estimated">Estimated</option>
+                                                    <option value="confirmed">Confirmed</option>
+                                                </select>
+                                            </div>
+                                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">My Tips</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={cut.me?.tips || ''}
+                                                        onChange={(e) => updateFormPath(`cuts.${key}.me.tips`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="0.00"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">My Hours</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.1"
+                                                        value={cut.me?.hours || ''}
+                                                        onChange={(e) => updateFormPath(`cuts.${key}.me.hours`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="0"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">Pool Total</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={cut.total?.tips || ''}
+                                                        onChange={(e) => updateFormPath(`cuts.${key}.total.tips`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="optional"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">Pool Hours</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.1"
+                                                        value={cut.total?.hours || ''}
+                                                        onChange={(e) => updateFormPath(`cuts.${key}.total.hours`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="optional"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">Share %</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={cut.share?.pct || ''}
+                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.pct`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="optional"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">People</label>
+                                                    <input
+                                                        type="number"
+                                                        value={cut.share?.people || ''}
+                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.people`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="optional"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">Notes</label>
+                                                    <input
+                                                        type="text"
+                                                        value={cut.share?.notes || ''}
+                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.notes`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="Team, weighting, etc."
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {panelOpen.parties && (
+                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-lg font-semibold text-slate-100">Parties & Events</h3>
+                                        <button type="button" onClick={handleAddParty} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
+                                            <i className="fas fa-plus"></i>
+                                            Add Party
+                                        </button>
+                                    </div>
+                                    {partyCount === 0 && (
+                                        <p className="text-sm text-slate-500">No parties logged yet.</p>
+                                    )}
+                                    {Object.entries(formData.parties || {}).map(([id, party], index) => (
+                                        <div key={id} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="flex items-center gap-3">
+                                                    <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">Party {index + 1}</span>
+                                                    <input
+                                                        type="text"
+                                                        value={party.name || ''}
+                                                        onChange={(e) => updateFormPath(`parties.${id}.name`, e.target.value)}
+                                                        className="bg-transparent border-b border-slate-700 text-sm px-2 py-1"
+                                                        placeholder="Party Name"
+                                                    />
+                                                </div>
+                                                <select
+                                                    value={party.cutType || (formData.type === 'night' ? 'night' : 'day')}
+                                                    onChange={(e) => updateFormPath(`parties.${id}.cutType`, e.target.value)}
+                                                    className="px-3 py-1.5 bg-slate-900/60 border border-slate-700 rounded-xl text-xs"
+                                                >
+                                                    <option value="day">Day</option>
+                                                    <option value="night">Night</option>
+                                                </select>
+                                            </div>
+                                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">Start</label>
+                                                    <input
+                                                        type="time"
+                                                        value={party.time?.start || ''}
+                                                        onChange={(e) => updateFormPath(`parties.${id}.time.start`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">End</label>
+                                                    <input
+                                                        type="time"
+                                                        value={party.time?.end || ''}
+                                                        onChange={(e) => updateFormPath(`parties.${id}.time.end`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">Gratuity</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={party.tips?.gratuity || ''}
+                                                        onChange={(e) => updateFormPath(`parties.${id}.tips.gratuity`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="≈800"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500">Cash Tips</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={party.tips?.cashTips || ''}
+                                                        onChange={(e) => updateFormPath(`parties.${id}.tips.cashTips`, e.target.value)}
+                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="optional"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <textarea
+                                                value={party.notes || ''}
+                                                onChange={(e) => updateFormPath(`parties.${id}.notes`, e.target.value)}
+                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
+                                                placeholder="Notes (helpers, packages, setup)"
+                                            ></textarea>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {panelOpen.coworkers && (
+                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-lg font-semibold text-slate-100">Coworkers</h3>
+                                        <button
+                                            type="button"
+                                            onClick={() => updateFormPath(`coworkers.bartenders.Temp_${Date.now().toString(36)}`, ['', '', ''])}
+                                            className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
+                                        >
+                                            <i className="fas fa-plus"></i>
+                                            Add Bartender
+                                        </button>
+                                    </div>
+                                    <div className="space-y-4">
+                                        {Object.entries(formData.coworkers?.bartenders || {}).map(([name, details]) => (
+                                            <div key={name} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-center">
+                                                <input
+                                                    type="text"
+                                                    value={name}
+                                                    onChange={(e) => {
+                                                        const nextName = e.target.value || `Crew_${Date.now().toString(36)}`;
+                                                        setFormData((prev) => {
+                                                            const next = JSON.parse(JSON.stringify(prev));
+                                                            const valueRef = next.coworkers.bartenders[name];
+                                                            delete next.coworkers.bartenders[name];
+                                                            next.coworkers.bartenders[nextName] = valueRef;
+                                                            return next;
+                                                        });
+                                                    }}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Name"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    value={details?.[0] || ''}
+                                                    onChange={(e) => updateFormPath(`coworkers.bartenders.${name}.0`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Location"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    value={details?.[1] || ''}
+                                                    onChange={(e) => updateFormPath(`coworkers.bartenders.${name}.1`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Time e.g. 16:00-02:30"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    value={details?.[2] || ''}
+                                                    onChange={(e) => updateFormPath(`coworkers.bartenders.${name}.2`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Hours"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="border-t border-slate-800/60 pt-4">
+                                        <h4 className="text-sm uppercase tracking-wider text-slate-500">Server Summary (quick)</h4>
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                value={formData.coworkerStats?.serversCount || ''}
+                                                onChange={(e) => updateFormPath('coworkerStats.serversCount', e.target.value)}
+                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="# Servers"
+                                            />
+                                            <input
+                                                type="text"
+                                                value={formData.coworkerStats?.serverStart || ''}
+                                                onChange={(e) => updateFormPath('coworkerStats.serverStart', e.target.value)}
+                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="Common start (e.g., 10:00)"
+                                            />
+                                            <input
+                                                type="text"
+                                                value={formData.coworkerStats?.serverEndBatch || ''}
+                                                onChange={(e) => updateFormPath('coworkerStats.serverEndBatch', e.target.value)}
+                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="End times list"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {panelOpen.enhancements && (
+                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-lg font-semibold text-slate-100">Enhancements & Adjustments</h3>
+                                        <div className="text-xs text-slate-500">Group overtime, consideration, swindle</div>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
+                                            <p className="text-xs uppercase tracking-wider text-slate-500">Wage</p>
+                                            <div className="mt-3 space-y-2">
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={formData.wage.base}
+                                                    onChange={(e) => updateFormPath('wage.base', parseFloat(e.target.value) || 0)}
+                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Rate"
+                                                />
+                                                <input
+                                                    type="number"
+                                                    step="0.1"
+                                                    value={formData.wage.hours}
+                                                    onChange={(e) => updateFormPath('wage.hours', parseFloat(e.target.value) || 0)}
+                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Hours"
+                                                />
+                                                <p className="text-xs text-slate-500">Total ${wageTotal.toFixed(2)}</p>
+                                            </div>
+                                        </div>
+                                        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
+                                            <p className="text-xs uppercase tracking-wider text-slate-500">Overtime</p>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                value={formData.earnings.overtime || formData.overtime || ''}
+                                                onChange={(e) => updateFormPath('earnings.overtime', parseFloat(e.target.value) || 0)}
+                                                className="mt-3 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                            />
+                                        </div>
+                                        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
+                                            <div className="flex items-center justify-between">
+                                                <p className="text-xs uppercase tracking-wider text-slate-500">Chump</p>
+                                                <div className="flex items-center gap-2">
+                                                    <label className="text-xs text-slate-500">Played?</label>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={formData.chump?.played || false}
+                                                        onChange={(e) => updateFormPath('chump.played', e.target.checked)}
+                                                        className="accent-cyan-500"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div className="mt-3 space-y-2">
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={formData.chump?.amount?.total || ''}
+                                                    onChange={(e) => updateFormPath('chump.amount.total', e.target.value)}
+                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Pot total"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    value={formData.chump?.winner || ''}
+                                                    onChange={(e) => updateFormPath('chump.winner', e.target.value)}
+                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Winner"
+                                                />
+                                                <textarea
+                                                    value={formData.chump?.notes || ''}
+                                                    onChange={(e) => updateFormPath('chump.notes', e.target.value)}
+                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
+                                                    placeholder="Notes"
+                                                ></textarea>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
+                                        <div className="flex items-center justify-between">
+                                            <h4 className="text-sm font-semibold text-slate-200">Consideration</h4>
+                                            <button type="button" onClick={handleAddConsideration} className="text-xs text-cyan-200 hover:text-white flex items-center gap-2">
+                                                <i className="fas fa-plus"></i>
+                                                Item
+                                            </button>
+                                        </div>
+                                        {(formData.consideration?.items || []).map((item, idx) => (
+                                            <div key={idx} className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                                <input
+                                                    type="text"
+                                                    value={item.from || ''}
+                                                    onChange={(e) => updateFormPath(`consideration.items.${idx}.from`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="From"
+                                                />
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={item.amount || ''}
+                                                    onChange={(e) => updateFormPath(`consideration.items.${idx}.amount`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Amount"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    value={item.reason || ''}
+                                                    onChange={(e) => updateFormPath(`consideration.items.${idx}.reason`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Reason"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    <div className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
+                                        <div className="flex items-center justify-between">
+                                            <h4 className="text-sm font-semibold text-slate-200">Swindle Movements</h4>
+                                            <button type="button" onClick={handleAddSwindleMovement} className="text-xs text-cyan-200 hover:text-white flex items-center gap-2">
+                                                <i className="fas fa-plus"></i>
+                                                Movement
+                                            </button>
+                                        </div>
+                                        {(formData.swindle?.movements || []).map((move, idx) => (
+                                            <div key={idx} className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                                <input
+                                                    type="text"
+                                                    value={move.from || ''}
+                                                    onChange={(e) => updateFormPath(`swindle.movements.${idx}.from`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="From"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    value={move.to || ''}
+                                                    onChange={(e) => updateFormPath(`swindle.movements.${idx}.to`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="To"
+                                                />
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={move.amount || ''}
+                                                    onChange={(e) => updateFormPath(`swindle.movements.${idx}.amount`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Amount"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    value={move.note || ''}
+                                                    onChange={(e) => updateFormPath(`swindle.movements.${idx}.note`, e.target.value)}
+                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                    placeholder="Note"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {panelOpen.drinking && (
+                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-lg font-semibold text-slate-100">On-Shift Drinking</h3>
+                                        <button type="button" onClick={handleAddDrinkingItem} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
+                                            <i className="fas fa-plus"></i>
+                                            Add Item
+                                        </button>
+                                    </div>
+                                    {(formData.drinking?.items || []).map((item, idx) => (
+                                        <div key={idx} className="grid grid-cols-1 md:grid-cols-6 gap-2">
+                                            <input
+                                                type="text"
+                                                value={item.name || ''}
+                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.name`, e.target.value)}
+                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="Name"
+                                            />
+                                            <input
+                                                type="text"
+                                                value={item.code || ''}
+                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.code`, e.target.value)}
+                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="Code"
+                                            />
+                                            <input
+                                                type="number"
+                                                step="0.1"
+                                                value={item.abv || ''}
+                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.abv`, e.target.value)}
+                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="ABV%"
+                                            />
+                                            <input
+                                                type="number"
+                                                step="0.5"
+                                                value={item.oz || ''}
+                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.oz`, e.target.value)}
+                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="Oz"
+                                            />
+                                            <input
+                                                type="number"
+                                                step="0.1"
+                                                value={item.quantity || 1}
+                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.quantity`, e.target.value)}
+                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="Qty"
+                                            />
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                value={item.sbe || ''}
+                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.sbe`, e.target.value)}
+                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="SBE"
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            <div className="flex flex-col gap-4">
+                                <textarea
+                                    value={formData.meta?.notes || ''}
+                                    onChange={(e) => updateFormPath('meta.notes', e.target.value)}
+                                    className="w-full min-h-[120px] px-4 py-3 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm"
+                                    placeholder="Context, observations, weather, promotions..."
+                                ></textarea>
+                                <div className="flex gap-4">
+                                    <button
+                                        type="submit"
+                                        className="flex-1 bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-8 py-4 rounded-2xl font-semibold text-lg shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 transition"
+                                    >
+                                        <i className="fas fa-save mr-3"></i>
+                                        Save Shift
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={onCancel}
+                                        className="px-6 py-4 rounded-2xl border border-slate-700 text-slate-300 hover:border-slate-500"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        // Shift Detail Component
+        function ShiftDetail({ shift, onEdit, onClose }) {
+            return (
+                <div className="glass rounded-2xl shadow-xl p-6 animate-slide-in border border-slate-800/40">
+                    <div className="flex items-center justify-between mb-6">
+                        <h2 className="text-2xl font-bold text-slate-100">
+                            Shift Details - {new Date(shift.date).toLocaleDateString()}
+                        </h2>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={onEdit}
+                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl hover:shadow-lg hover:shadow-cyan-500/30 transition-all duration-300"
+                            >
+                                <i className="fas fa-edit mr-2"></i>Edit
+                            </button>
+                            <button
+                                onClick={onClose}
+                                className="bg-slate-900/70 border border-slate-700 text-slate-200 px-4 py-2 rounded-xl hover:border-cyan-500 transition-all duration-300"
+                            >
+                                <i className="fas fa-times mr-2"></i>Close
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="bg-slate-900/70 rounded-xl p-4 border border-slate-800/60">
+                            <h3 className="font-semibold text-slate-100 mb-3">Basic Information</h3>
+                            <div className="space-y-2 text-slate-300 text-sm">
+                                <div className="flex justify-between">
+                                    <span>Date:</span>
+                                    <span className="font-semibold text-slate-100">{shift.date}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Type:</span>
+                                    <span className="font-semibold text-slate-100 capitalize">{shift.type}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Name:</span>
+                                    <span className="font-semibold text-slate-100">{shift.myName}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-slate-900/70 rounded-xl p-4 border border-slate-800/60">
+                            <h3 className="font-semibold text-slate-100 mb-3">Time</h3>
+                            <div className="space-y-2 text-slate-300 text-sm">
+                                <div className="flex justify-between">
+                                    <span>Start:</span>
+                                    <span className="font-semibold text-slate-100">{shift.time?.base?.start}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>End:</span>
+                                    <span className="font-semibold text-slate-100">{shift.time?.base?.end}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Hours:</span>
+                                    <span className="font-semibold text-slate-100">{shift.time?.base?.hours?.toFixed(1)}h</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-slate-900/70 rounded-xl p-4 border border-slate-800/60">
+                            <h3 className="font-semibold text-slate-100 mb-3">Earnings Breakdown</h3>
+                            <div className="space-y-2 text-sm text-slate-300">
+                                <div className="flex justify-between">
+                                    <span>Tips:</span>
+                                    <span className="font-semibold text-cyan-300">${shift.earnings?.tips?.toFixed(2) || '0.00'}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Wage:</span>
+                                    <span className="font-semibold text-emerald-300">${shift.earnings?.wage?.toFixed(2) || '0.00'}</span>
+                                </div>
+                                {shift.earnings?.overtime > 0 && (
+                                    <div className="flex justify-between">
+                                        <span>Overtime:</span>
+                                        <span className="font-semibold text-amber-300">${shift.earnings.overtime.toFixed(2)}</span>
+                                    </div>
+                                )}
+                                <div className="flex justify-between pt-2 border-t border-slate-800/60 text-slate-100">
+                                    <span className="font-semibold">Total:</span>
+                                    <span className="font-bold text-xl text-emerald-300">${shift.earnings?.total?.toFixed(2) || '0.00'}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-slate-900/70 rounded-xl p-4 border border-slate-800/60">
+                            <h3 className="font-semibold text-slate-100 mb-3">Performance Summary</h3>
+                            <div className="space-y-2 text-sm text-slate-300">
+                                <div className="flex justify-between">
+                                    <span>Hourly Rate:</span>
+                                    <span className="font-bold text-lg text-indigo-300">${shift.summary?.hourly?.toFixed(2) || '0.00'}/hr</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Tips/Hour:</span>
+                                    <span className="font-semibold text-fuchsia-300">${shift.summary?.tips?.actual?.perHour?.toFixed(2) || '0.00'}/hr</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Total Hours:</span>
+                                    <span className="font-semibold text-slate-100">{shift.summary?.hours?.toFixed(1) || '0.0'}h</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="mt-6 bg-slate-900/70 rounded-xl p-4 border border-slate-800/60">
+                        <details>
+                            <summary className="font-semibold text-slate-100 cursor-pointer hover:text-cyan-300">
+                                View Raw JSON Data
+                            </summary>
+                            <pre className="mt-3 text-xs bg-slate-950 p-4 rounded border border-slate-800 overflow-x-auto scrollbar-thin text-slate-300">
+{JSON.stringify(shift, null, 2)}
+                            </pre>
+                        </details>
+                    </div>
+                </div>
+            );
+        }
+
+        // Render App
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
