@@ -266,10 +266,118 @@
 
         const sheetsAPI = new GoogleSheetsAPI();
 
+        const SHIFT_CACHE_KEY = 'tipPool.shiftCache.v2';
+        const SHIFT_QUEUE_KEY = 'tipPool.shiftQueue.v1';
+
+        function loadCachedShifts() {
+            try {
+                const raw = localStorage.getItem(SHIFT_CACHE_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (!Array.isArray(parsed)) return null;
+                return parsed;
+            } catch (error) {
+                console.warn('Failed to parse cached shifts', error);
+                return null;
+            }
+        }
+
+        function storeCachedShifts(records) {
+            try {
+                localStorage.setItem(SHIFT_CACHE_KEY, JSON.stringify(records || []));
+            } catch (error) {
+                console.warn('Failed to store cached shifts', error);
+            }
+        }
+
+        function loadPendingQueue() {
+            try {
+                const raw = localStorage.getItem(SHIFT_QUEUE_KEY);
+                if (!raw) return [];
+                const parsed = JSON.parse(raw);
+                if (!Array.isArray(parsed)) return [];
+                return parsed;
+            } catch (error) {
+                console.warn('Failed to parse pending queue', error);
+                return [];
+            }
+        }
+
+        function storePendingQueue(queue) {
+            try {
+                localStorage.setItem(SHIFT_QUEUE_KEY, JSON.stringify(queue || []));
+            } catch (error) {
+                console.warn('Failed to store pending queue', error);
+            }
+        }
+
+        function serializeShiftForRow(shift) {
+            const totalEarnings = parseFloat(shift?.earnings?.total ?? 0) || 0;
+            const hours = parseFloat(shift?.summary?.hours ?? 0) || 0;
+            return [
+                shift.id || `shift_${Date.now()}`,
+                shift.date || '',
+                shift.type || '',
+                hours.toFixed(2),
+                totalEarnings.toFixed(2),
+                JSON.stringify(shift),
+            ];
+        }
+
+        function deserializeShiftRow(rowIndex, rowValues) {
+            const [id, date, type, hoursStr, totalStr, json] = rowValues;
+            let data = null;
+            try {
+                data = json ? JSON.parse(json) : null;
+            } catch (error) {
+                console.warn('Failed to parse shift JSON from sheet', error, rowValues);
+            }
+            if (!data) {
+                data = {
+                    id,
+                    date,
+                    type,
+                    summary: { hours: parseFloat(hoursStr) || 0, hourly: 0 },
+                    earnings: { total: parseFloat(totalStr) || 0 },
+                };
+            }
+            data = normalizeShiftPayload(data);
+            if (!data.id) data.id = id || `shift_${Date.now()}`;
+            return {
+                rowIndex,
+                id: data.id,
+                data,
+            };
+        }
+
+        function applyLocalShift(records, shiftRecord) {
+            const next = Array.isArray(records) ? [...records] : [];
+            const index = next.findIndex((item) => item.id === shiftRecord.id);
+            if (index >= 0) {
+                next[index] = shiftRecord;
+            } else {
+                next.push(shiftRecord);
+            }
+            return next;
+        }
+
+        function removeLocalShift(records, shiftId) {
+            return (records || []).filter((item) => item.id !== shiftId);
+        }
+
+        function estimateRowIndex(records, shiftId) {
+            const record = (records || []).find((item) => item.id === shiftId);
+            return record?.rowIndex || null;
+        }
+
+        function isOnline() {
+            return typeof navigator !== 'undefined' ? navigator.onLine : true;
+        }
+
         // Main App Component
         function App() {
             const [view, setView] = useState('list'); // list, create, edit, view
-            const [shifts, setShifts] = useState([]);
+            const [shifts, setShifts] = useState(() => loadCachedShifts() || []);
               const [currentShift, setCurrentShift] = useState(null);
               const [isAuthenticated, setIsAuthenticated] = useState(false);
               const [config, setConfig] = useState({
@@ -378,28 +486,33 @@
                 initializeGoogleAPI(config);
             };
 
-            const loadShifts = async () => {
+            const loadShifts = useCallback(async () => {
                 if (!config.spreadsheetId || !isAuthenticated) return;
                 
                 setLoading(true);
                 setError(null);
                 try {
-                    const range = `${config.sheetName}!A2:B`;
-                    const data = await sheetsAPI.readData(config.spreadsheetId, range);
-                    
-                    const loadedShifts = data.map((row, index) => ({
-                        rowIndex: index + 2,
-                        id: row[0] || `shift_${Date.now()}_${index}`,
-                        data: row[1] ? JSON.parse(row[1]) : null,
-                    })).filter(shift => shift.data);
-                    
+                    const range = `${config.sheetName}!A2:F`;
+                    const response = await sheetsAPI.readData(config.spreadsheetId, range);
+                    const values = response || [];
+                    const loadedShifts = values
+                        .map((row, index) => deserializeShiftRow(index + 2, row))
+                        .filter(Boolean);
                     setShifts(loadedShifts);
+                    storeCachedShifts(loadedShifts);
                 } catch (error) {
-                    setError('Failed to load shifts: ' + error.message);
+                    console.warn('Failed to fetch shifts from Sheets', error);
+                    const cached = loadCachedShifts();
+                    if (cached && cached.length) {
+                        setShifts(cached);
+                        setError('Offline mode: showing cached shifts.');
+                    } else {
+                        setError('Failed to load shifts: ' + error.message);
+                    }
                 } finally {
                     setLoading(false);
                 }
-            };
+            }, [config.sheetName, config.spreadsheetId, isAuthenticated]);
 
             const loadCoworkerDirectory = useCallback(async () => {
                 if (!config.spreadsheetId || !isAuthenticated) return;
@@ -440,65 +553,162 @@
                 }
             }, [config.spreadsheetId, isAuthenticated]);
 
+            const syncingRef = useRef(false);
+
+            const syncPendingShifts = useCallback(async () => {
+                if (syncingRef.current) return;
+                if (!config.spreadsheetId || !isAuthenticated || !isOnline()) return;
+                const queue = loadPendingQueue();
+                if (!queue.length) return;
+                syncingRef.current = true;
+
+                const sheetName = config.sheetName || 'Shifts';
+                const updates = [];
+                const clears = [];
+                const inserts = [];
+
+                queue.forEach((op) => {
+                    if (op.type === 'delete') {
+                        if (op.rowIndex) {
+                            clears.push(op);
+                        }
+                    } else if (op.type === 'upsert') {
+                        if (op.rowIndex) {
+                            updates.push(op);
+                        } else {
+                            inserts.push(op);
+                        }
+                    }
+                });
+
+                try {
+                    const dataRequests = [];
+                    updates.forEach((op) => {
+                        dataRequests.push({
+                            range: `${sheetName}!A${op.rowIndex}:F${op.rowIndex}`,
+                            values: [serializeShiftForRow(op.shift)],
+                        });
+                    });
+                    clears.forEach((op) => {
+                        dataRequests.push({
+                            range: `${sheetName}!A${op.rowIndex}:F${op.rowIndex}`,
+                            values: [['', '', '', '', '', '']],
+                        });
+                    });
+
+                    if (dataRequests.length) {
+                        await gapi.client.sheets.spreadsheets.values.batchUpdate({
+                            spreadsheetId: config.spreadsheetId,
+                            resource: {
+                                valueInputOption: 'USER_ENTERED',
+                                data: dataRequests,
+                            },
+                        });
+                    }
+
+                    if (inserts.length) {
+                        const insertValues = inserts.map((op) => serializeShiftForRow(op.shift));
+                        await gapi.client.sheets.spreadsheets.values.append({
+                            spreadsheetId: config.spreadsheetId,
+                            range: `${sheetName}!A:F`,
+                            valueInputOption: 'USER_ENTERED',
+                            insertDataOption: 'INSERT_ROWS',
+                            resource: {
+                                values: insertValues,
+                            },
+                        });
+                    }
+
+                    storePendingQueue([]);
+                    await loadShifts();
+                } catch (error) {
+                    console.warn('Failed to sync pending shifts', error);
+                    setError('Unable to sync pending changes. They will retry when you are back online.');
+                } finally {
+                    syncingRef.current = false;
+                }
+            }, [config.sheetName, config.spreadsheetId, isAuthenticated, loadShifts]);
+
             useEffect(() => {
                 if (!isAuthenticated || !config.spreadsheetId) return;
                 loadShifts();
-            }, [isAuthenticated, config.spreadsheetId, config.sheetName]);
+            }, [isAuthenticated, config.spreadsheetId, loadShifts]);
 
             useEffect(() => {
                 if (!isAuthenticated || !config.spreadsheetId) return;
                 loadCoworkerDirectory();
             }, [isAuthenticated, config.spreadsheetId, loadCoworkerDirectory]);
 
+            useEffect(() => {
+                syncPendingShifts();
+            }, [syncPendingShifts]);
+
+            useEffect(() => {
+                const handleOnline = () => {
+                    syncPendingShifts();
+                };
+                window.addEventListener('online', handleOnline);
+                return () => {
+                    window.removeEventListener('online', handleOnline);
+                };
+            }, [syncPendingShifts]);
+
             const saveShift = async (shiftData) => {
+                const normalized = normalizeShiftPayload(shiftData) || shiftData;
+                const rowIndex = estimateRowIndex(shifts, normalized.id);
+                const queue = loadPendingQueue();
+                queue.push({
+                    type: 'upsert',
+                    id: normalized.id,
+                    shift: normalized,
+                    rowIndex,
+                    timestamp: Date.now(),
+                });
+                storePendingQueue(queue);
+
+                const nextRecords = applyLocalShift(shifts, {
+                    rowIndex: rowIndex || null,
+                    id: normalized.id,
+                    data: normalized,
+                });
+                setShifts(nextRecords);
+                storeCachedShifts(nextRecords);
+                setView('list');
+
                 if (!config.spreadsheetId || !isAuthenticated) return;
-                
+
                 setLoading(true);
                 setError(null);
                 try {
-                    const id = shiftData.id || `shift_${shiftData.date.replace(/-/g, '')}`;
-                    const jsonData = JSON.stringify(shiftData);
-                    
-                    // Check if shift exists
-                    const existingIndex = shifts.findIndex(s => s.id === id);
-                    
-                    if (existingIndex >= 0) {
-                        // Update existing
-                        const range = `${config.sheetName}!A${shifts[existingIndex].rowIndex}:B${shifts[existingIndex].rowIndex}`;
-                        await sheetsAPI.writeData(config.spreadsheetId, range, [[id, jsonData]]);
-                    } else {
-                        // Append new
-                        const range = `${config.sheetName}!A:B`;
-                        await sheetsAPI.appendData(config.spreadsheetId, range, [[id, jsonData]]);
-                    }
-                    
-                    await loadShifts();
-                    setView('list');
-                } catch (error) {
-                    setError('Failed to save shift: ' + error.message);
+                    await syncPendingShifts();
                 } finally {
                     setLoading(false);
                 }
             };
 
             const deleteShift = async (shiftId) => {
-                if (!config.spreadsheetId || !isAuthenticated) return;
-                
                 if (!confirm('Are you sure you want to delete this shift?')) return;
                 
+                const rowIndex = estimateRowIndex(shifts, shiftId);
+                const queue = loadPendingQueue();
+                queue.push({
+                    type: 'delete',
+                    id: shiftId,
+                    rowIndex,
+                    timestamp: Date.now(),
+                });
+                storePendingQueue(queue);
+
+                const nextRecords = removeLocalShift(shifts, shiftId);
+                setShifts(nextRecords);
+                storeCachedShifts(nextRecords);
+
+                if (!config.spreadsheetId || !isAuthenticated) return;
+
                 setLoading(true);
                 setError(null);
                 try {
-                    const shiftIndex = shifts.findIndex(s => s.id === shiftId);
-                    if (shiftIndex >= 0) {
-                        // Note: This is simplified - you'd need the sheet ID for proper deletion
-                        // For now, we'll clear the row and reload
-                        const range = `${config.sheetName}!A${shifts[shiftIndex].rowIndex}:B${shifts[shiftIndex].rowIndex}`;
-                        await sheetsAPI.writeData(config.spreadsheetId, range, [['', '']]);
-                        await loadShifts();
-                    }
-                } catch (error) {
-                    setError('Failed to delete shift: ' + error.message);
+                    await syncPendingShifts();
                 } finally {
                     setLoading(false);
                 }
@@ -1407,6 +1617,7 @@
                 base: 5.0,
                 hours: '',
                 total: '',
+                autoTotal: true,
                 clock: { start: '', end: '', manualStart: false, manualEnd: false },
             },
             tips: { _total: '' },
@@ -1427,10 +1638,11 @@
                 outcome: null,
                 winner: '',
                 notes: '',
-                amount: { total: '', cash: '', coins: '' },
+                amount: { total: '', cash: '', coins: '', manualTotal: false },
                 players: [],
+                playerCountOverride: '',
             },
-            overtime: 0,
+            overtime: '',
             consideration: { items: [], net: 0 },
             swindle: { total: 0, movements: [], net: {} },
             drinking: { items: [], totalSBE: 0 },
@@ -1452,7 +1664,7 @@
                 },
             },
             meta: {
-                tipsPending: false,
+                tipsPending: true,
                 chumpLogged: false,
                 notes: '',
             },
@@ -1481,12 +1693,31 @@
             let cursor = target;
             for (let i = 0; i < keys.length - 1; i += 1) {
                 const key = keys[i];
-                if (!cursor[key] || typeof cursor[key] !== 'object') {
-                    cursor[key] = {};
+                const isIndex = /^\d+$/.test(key);
+                if (isIndex) {
+                    const index = Number(key);
+                    if (!Array.isArray(cursor)) {
+                        cursor[key] = cursor[key] || {};
+                        cursor = cursor[key];
+                    } else {
+                        if (!cursor[index]) {
+                            cursor[index] = {};
+                        }
+                        cursor = cursor[index];
+                    }
+                } else {
+                    if (!cursor[key] || typeof cursor[key] !== 'object') {
+                        cursor[key] = {};
+                    }
+                    cursor = cursor[key];
                 }
-                cursor = cursor[key];
             }
-            cursor[keys[keys.length - 1]] = value;
+            const lastKey = keys[keys.length - 1];
+            if (/^\d+$/.test(lastKey) && Array.isArray(cursor)) {
+                cursor[Number(lastKey)] = value;
+            } else {
+                cursor[lastKey] = value;
+            }
         }
 
         function getNestedValue(target, path) {
@@ -1815,14 +2046,17 @@
 
         function ensureCutSkeleton(type, parties, existingCuts) {
             const normalizedParties = parties || {};
-            const baseCutSet =
-                type === 'day'
-                    ? new Set(['day', 'mid', 'night'])
-                    : type === 'night'
-                        ? new Set(['night', 'mid'])
-                        : new Set(['day', 'mid', 'night']);
-
-            baseCutSet.add('night'); // night cut is always available
+            const baseCutSet = new Set();
+            if (type === 'day') {
+                baseCutSet.add('day');
+            } else if (type === 'night') {
+                baseCutSet.add('night');
+            } else if (type === 'double') {
+                baseCutSet.add('day');
+                baseCutSet.add('night');
+            } else {
+                baseCutSet.add('day');
+            }
 
             const requiredPartyCuts = Object.entries(normalizedParties)
                 .filter(([, party]) => (party?.cutType || type || 'night') !== 'night')
@@ -2013,6 +2247,7 @@
             cloned.wage.clock.end = cloned.wage.clock.end || '';
             cloned.wage.clock.manualStart = Boolean(cloned.wage.clock.manualStart);
             cloned.wage.clock.manualEnd = Boolean(cloned.wage.clock.manualEnd);
+            cloned.wage.autoTotal = cloned.wage.autoTotal === undefined ? true : Boolean(cloned.wage.autoTotal);
 
             if (!cloned.tips) cloned.tips = { _total: '' };
             if (cloned.tips._total === 0) cloned.tips._total = '';
@@ -2029,11 +2264,16 @@
                     total: amount.total !== undefined ? String(amount.total) : '',
                     cash: amount.cash !== undefined ? String(amount.cash) : (amount.bills !== undefined ? String(amount.bills) : ''),
                     coins: amount.coins !== undefined ? String(amount.coins) : '',
+                    manualTotal: amount.manualTotal === undefined ? false : Boolean(amount.manualTotal),
                 };
+                cloned.chump.playerCountOverride =
+                    cloned.chump.playerCountOverride !== undefined ? String(cloned.chump.playerCountOverride) : '';
                 cloned.chump.players = Array.isArray(cloned.chump.players)
                     ? cloned.chump.players.map((player) => sanitizeChumpPlayer(player))
                     : [];
             }
+
+            cloned.overtime = cloned.overtime !== undefined ? String(cloned.overtime) : '';
 
             if (!Array.isArray(cloned.drinking?.items)) {
                 cloned.drinking = cloned.drinking || {};
@@ -2148,6 +2388,11 @@
                 enhancements: false,
                 drinking: false,
             });
+            const [sectionOpen, setSectionOpen] = useState({
+                wage: false,
+                overtime: false,
+                chump: false,
+            });
             const [timeDrafts, setTimeDrafts] = useState(() => buildInitialTimeDrafts(initialFormSnapshot));
             const [timeErrors, setTimeErrors] = useState({});
             const [shiftTypeMode, setShiftTypeMode] = useState(shift?.type ? 'manual' : 'auto');
@@ -2185,6 +2430,11 @@
                     );
                 });
             }, [coworkerDirectory]);
+            const selfIdentity = useMemo(
+                () => coworkerDirectory.find((member) => member.isSelf) || null,
+                [coworkerDirectory]
+            );
+            const selfName = selfIdentity?.name || 'Ian';
 
             useEffect(() => {
                 setFormData(initialFormSnapshot);
@@ -2196,6 +2446,7 @@
                 setCutSnapshots({});
                 setExpandedParties({});
                 setPartySnapshots({});
+                setSectionOpen({ wage: false, overtime: false, chump: false });
             }, [initialFormSnapshot]);
 
             useEffect(() => {
@@ -2231,10 +2482,72 @@
                 setPanelOpen((prev) => ({ ...prev, [panel]: !prev[panel] }));
             };
 
+            const recalcWageTotals = (draft) => {
+                if (!draft || !draft.wage) return;
+                draft.wage.clock = draft.wage.clock || { start: '', end: '', manualStart: false, manualEnd: false };
+                const clockStart = draft.wage.clock.start;
+                const clockEnd = draft.wage.clock.end;
+                if (clockStart && clockEnd) {
+                    const hours = calculateHoursBetween(clockStart, clockEnd);
+                    draft.wage.hours = Number.isFinite(hours) ? hours.toFixed(2) : '';
+                    const wageRate = parseFloat(draft.wage.base) || 0;
+                    const autoEligible = draft.wage.autoTotal || draft.wage.total === '' || draft.wage.total === null;
+                    if (autoEligible) {
+                        const total = wageRate * hours;
+                        draft.wage.total = Number.isFinite(total) ? total.toFixed(2) : '';
+                        draft.wage.autoTotal = true;
+                    }
+                } else {
+                    draft.wage.hours = '';
+                    if (draft.wage.autoTotal) {
+                        draft.wage.total = '';
+                    }
+                }
+            };
+
             const updateFormPath = (path, value) => {
                 setFormData((prev) => {
                     const next = JSON.parse(JSON.stringify(prev));
                     setNestedValue(next, path, value);
+                    if (path === 'wage.total') {
+                        next.wage = next.wage || {};
+                        next.wage.autoTotal = value === '' ? true : false;
+                    }
+                    if (path === 'wage.base') {
+                        next.wage = next.wage || {};
+                        next.wage.base = value;
+                        recalcWageTotals(next);
+                    }
+                    if (path === 'chump.amount.total') {
+                        next.chump = next.chump || { amount: { total: '', cash: '', coins: '', manualTotal: false } };
+                        next.chump.amount = next.chump.amount || { total: '', cash: '', coins: '', manualTotal: false };
+                        next.chump.amount.manualTotal = !!(value && value !== '');
+                        if (!next.chump.amount.manualTotal) {
+                            const cash = parseFloat(String(next.chump.amount.cash || '0').replace(/[^\d.-]/g, '')) || 0;
+                            const coins = parseFloat(String(next.chump.amount.coins || '0').replace(/[^\d.-]/g, '')) || 0;
+                            const total = cash + coins;
+                            next.chump.amount.total = total ? total.toFixed(2) : '';
+                        }
+                    }
+                    if (path === 'chump.amount.cash' || path === 'chump.amount.coins') {
+                        next.chump = next.chump || { amount: { total: '', cash: '', coins: '', manualTotal: false } };
+                        next.chump.amount = next.chump.amount || { total: '', cash: '', coins: '', manualTotal: false };
+                        if (!next.chump.amount.manualTotal) {
+                            const cash = parseFloat(String(next.chump.amount.cash || '0').replace(/[^\d.-]/g, '')) || 0;
+                            const coins = parseFloat(String(next.chump.amount.coins || '0').replace(/[^\d.-]/g, '')) || 0;
+                            const total = cash + coins;
+                            next.chump.amount.total = total ? total.toFixed(2) : '';
+                        }
+                    }
+                    if (path === 'chump.outcome' && value === 'win') {
+                        if (!next.chump.winner) {
+                            next.chump.winner = selfName;
+                        }
+                    } else if (path === 'chump.outcome' && value !== 'win') {
+                        if (next.chump.winner === selfName) {
+                            next.chump.winner = value === 'loss' ? '' : next.chump.winner;
+                        }
+                    }
                     return next;
                 });
             };
@@ -2323,18 +2636,32 @@
                     if (formPath.startsWith('time.base.')) {
                         const start = formPath === 'time.base.start' ? parsed.normalized : next.time.base.start;
                         const end = formPath === 'time.base.end' ? parsed.normalized : next.time.base.end;
+                        next.wage = next.wage || {};
+                        next.wage.clock = next.wage.clock || { start: '', end: '', manualStart: false, manualEnd: false };
+                        if (formPath === 'time.base.start' && !next.wage.clock.manualStart) {
+                            next.wage.clock.start = parsed.normalized;
+                        }
+                        if (formPath === 'time.base.end' && !next.wage.clock.manualEnd) {
+                            next.wage.clock.end = parsed.normalized;
+                        }
                         if (start && end) {
                             const hours = calculateHoursBetween(start, end);
                             next.time.base.hours = hours;
-                            next.wage.hours = hours;
-                            const wageRate = parseFloat(next.wage.base) || 0;
-                            next.wage.total = parseFloat((wageRate * hours).toFixed(2));
                             next.summary.hours = hours;
                         }
+                        recalcWageTotals(next);
                     }
 
                     if (formPath.startsWith('wage.clock.')) {
-                        next.wage.clock = next.wage.clock || { start: '', end: '' };
+                        next.wage = next.wage || {};
+                        next.wage.clock = next.wage.clock || { start: '', end: '', manualStart: false, manualEnd: false };
+                        if (formPath === 'wage.clock.start') {
+                            next.wage.clock.manualStart = true;
+                        }
+                        if (formPath === 'wage.clock.end') {
+                            next.wage.clock.manualEnd = true;
+                        }
+                        recalcWageTotals(next);
                     }
 
                     const partyMatch = formPath.match(/^parties\.([^.]+)\.time\.(start|end)$/);
@@ -2599,8 +2926,15 @@
             const handleTipsChange = (value) => {
                 setFormData((prev) => {
                     const next = JSON.parse(JSON.stringify(prev));
-                    next.tips._total = value;
-                    next.earnings.tips = parseAmount(value);
+                    const normalized = typeof value === 'string' ? value.replace(',', '.').trim() : value;
+                    next.tips._total = normalized;
+                    next.earnings.tips = parseAmount(normalized);
+                    if (!normalized) {
+                        next.meta = next.meta || {};
+                        next.meta.tipsPending = true;
+                    } else if (next.meta) {
+                        next.meta.tipsPending = false;
+                    }
                     return next;
                 });
             };
@@ -2637,7 +2971,7 @@
 
                 setPartySnapshots((prev) => ({ ...prev, [partyId]: null }));
                 setExpandedParties((prev) => ({ ...prev, [partyId]: true }));
-                setPanelOpen((prev) => ({ ...prev, parties: true, cuts: true }));
+                setPanelOpen((prev) => ({ ...prev, parties: true }));
             };
 
             const handleAddCut = () => {
@@ -3219,17 +3553,19 @@
                                             <i className="fas fa-layer-group"></i>
                                         </button>
                                     </label>
-                                    <div className="mt-2 relative">
-                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-2xl">$</span>
-                                        <input
-                                            type="number"
-                                            step="0.01"
-                                            value={formData.tips._total}
-                                            onChange={(e) => handleTipsChange(e.target.value)}
-                                            className="w-full pl-12 pr-4 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-3xl font-semibold focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                            placeholder="0.00"
-                                        />
-                                    </div>
+                                        <div className="mt-2 relative">
+                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-2xl">$</span>
+                                            <input
+                                                type="text"
+                                                inputMode="decimal"
+                                                pattern="[0-9]*[.,]?[0-9]*"
+                                                value={formData.tips._total ?? ''}
+                                                onChange={(e) => handleTipsChange(e.target.value)}
+                                                onWheel={(e) => e.currentTarget.blur()}
+                                                className="w-full pl-12 pr-4 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-3xl font-semibold focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                                placeholder="0.00"
+                                            />
+                                        </div>
                                 </div>
                             </div>
 
