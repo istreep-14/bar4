@@ -981,6 +981,27 @@
                 }
             };
 
+            const startNewShift = useCallback(
+                (seed = {}) => {
+                    const normalizedSeed = normalizeShiftPayload(seed) || seed;
+                    const draft = deepMergeShift(DEFAULT_SHIFT_TEMPLATE, normalizedSeed);
+                    setCurrentShift(draft);
+                    setView('create');
+                },
+                []
+            );
+
+            const startNewShiftForDate = useCallback(
+                (dateKey) => {
+                    if (!dateKey) {
+                        startNewShift();
+                        return;
+                    }
+                    startNewShift({ date: dateKey });
+                },
+                [startNewShift]
+            );
+
             const editShift = (shift) => {
                 setCurrentShift(shift.data);
                 setView('edit');
@@ -1009,15 +1030,15 @@
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-3">
-                                    {isAuthenticated && (
-                                        <button
-                                            onClick={() => setView('create')}
-                                            className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-6 py-2.5 rounded-xl hover:shadow-lg hover:shadow-cyan-500/30 transition-all duration-300 flex items-center gap-2"
-                                        >
-                                            <i className="fas fa-plus"></i>
-                                            New Shift
-                                        </button>
-                                    )}
+                                      {isAuthenticated && (
+                                          <button
+                                              onClick={() => startNewShift({ date: new Date().toISOString().split('T')[0] })}
+                                              className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-6 py-2.5 rounded-xl hover:shadow-lg hover:shadow-cyan-500/30 transition-all duration-300 flex items-center gap-2"
+                                          >
+                                              <i className="fas fa-plus"></i>
+                                              New Shift
+                                          </button>
+                                      )}
                                     <button
                                         onClick={() => setShowConfig(!showConfig)}
                                         className="bg-slate-900/70 text-slate-200 px-4 py-2.5 rounded-xl hover:bg-slate-800 transition-all duration-300 border border-slate-700"
@@ -1104,14 +1125,16 @@
                                             onEdit={editShift}
                                             onDelete={deleteShift}
                                             onView={viewShift}
+                                              onStartNew={startNewShiftForDate}
                                             loading={loading}
                                             onRefresh={loadShifts}
                                         />
                                         <ChartsPanel shifts={shifts} />
                                     </div>
                                 )}
-                                {view === 'create' && (
+                                  {view === 'create' && (
                                     <ShiftForm
+                                          shift={currentShift}
                                         onSave={saveShift}
                                           onCancel={() => setView('list')}
                                           coworkerDirectory={coworkerDirectory}
@@ -1260,7 +1283,7 @@
             );
         }
 
-        function MonthlyCalendar({ shifts, onSelectShift }) {
+        function MonthlyCalendar({ shifts, onSelectDay }) {
             const [activeMonth, setActiveMonth] = useState(() => {
                 const now = new Date();
                 return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -1336,6 +1359,17 @@
                 );
             };
 
+            const formatCurrencyCompact = (amount) => {
+                const value = Number(amount || 0);
+                if (Math.abs(value) >= 1000) {
+                    return `$${(value / 1000).toFixed(1)}k`;
+                }
+                if (Math.abs(value) >= 100) {
+                    return `$${value.toFixed(0)}`;
+                }
+                return `$${value.toFixed(2)}`;
+            };
+
             return (
                 <div className="glass rounded-xl shadow-lg p-4 border border-slate-800/40">
                     <div className="flex items-center justify-between mb-3">
@@ -1369,34 +1403,51 @@
                             </div>
                         ))}
                     </div>
-                    <div className="grid grid-cols-7 gap-1 text-center">
+                    <div className="grid grid-cols-7 gap-2 text-center">
                         {calendarCells.map((cell, index) => {
                             if (cell.type === 'pad') {
-                                return <div key={`pad-${index}`} className="h-14 rounded-lg bg-slate-900/40 border border-slate-900/60"></div>;
+                                return <div key={`pad-${index}`} className="aspect-square rounded-xl bg-slate-900/40 border border-slate-900/60"></div>;
                             }
-                            const shiftCount = cell.shifts.length;
-                            const hasShifts = shiftCount > 0;
-                            const tooltip = hasShifts
-                                ? cell.shifts
-                                      .map((s) => {
-                                            const earnings = Number(s.data.earnings?.total ?? 0);
-                                            return `${s.data.myName || 'Shift'} • $${earnings.toFixed(2)}`;
-                                      })
-                                      .join('\n')
-                                : '';
+                            const shift = cell.shifts[0];
+                            const hasShift = !!shift;
+                            const earnings = Number(shift?.data?.earnings?.total ?? 0);
+                            const hours = Number(shift?.data?.summary?.hours ?? 0);
+                            const hourly = hours > 0 ? earnings / hours : 0;
+                            const dateLabel = cell.date.toLocaleDateString('en-US', {
+                                weekday: 'long',
+                                month: 'long',
+                                day: 'numeric',
+                                year: 'numeric',
+                            });
+                            const tooltip = hasShift
+                                ? `${dateLabel}\nEarnings: $${earnings.toFixed(2)}\nHours: ${hours.toFixed(2)}`
+                                : `${dateLabel}\nClick to add a shift`;
 
                             return (
                                 <button
                                     key={cell.dateKey}
                                     type="button"
-                                    onClick={() => hasShifts && onSelectShift && onSelectShift(cell.shifts[0])}
+                                    onClick={() => onSelectDay && onSelectDay(cell.dateKey, shift || null)}
                                     title={tooltip}
-                                    className={`h-14 rounded-lg border text-xs flex flex-col items-center justify-center gap-1 transition
-                                        ${hasShifts ? 'bg-cyan-500/15 border-cyan-400/40 text-cyan-100 hover:bg-cyan-500/25' : 'bg-slate-900/50 border-slate-800/60 text-slate-300'}
+                                    className={`aspect-square rounded-xl border text-left text-xs transition relative overflow-hidden group p-2
+                                        ${
+                                            hasShift
+                                                ? 'bg-cyan-500/15 border-cyan-400/40 text-cyan-100 hover:bg-cyan-500/25'
+                                                : 'bg-slate-900/50 border-slate-800/60 text-slate-300 hover:border-cyan-500/30'
+                                        }
                                         ${isToday(cell.date) ? 'ring-1 ring-cyan-400/60' : ''}`}
                                 >
-                                    <span className="font-semibold text-sm">{cell.date.getDate()}</span>
-                                    {hasShifts && <span className="px-2 py-0.5 rounded-full bg-cyan-500/30 text-[10px]">{shiftCount} shift{shiftCount > 1 ? 's' : ''}</span>}
+                                    <div className="text-[11px] uppercase tracking-wide text-slate-400">
+                                        {cell.date.getDate()}
+                                    </div>
+                                    <div className="mt-2 space-y-1">
+                                        <div className="text-base font-semibold text-slate-100">
+                                            {hasShift ? formatCurrencyCompact(earnings) : <span className="text-slate-500">—</span>}
+                                        </div>
+                                        <div className="text-[11px] text-slate-400 leading-tight">
+                                            {hasShift ? `${hours.toFixed(1)}h · $${hourly.toFixed(2)}/h` : 'Tap to add'}
+                                        </div>
+                                    </div>
                                 </button>
                             );
                         })}
@@ -1406,147 +1457,262 @@
         }
 
         // Shift List Component
-        function ShiftList({ shifts, onEdit, onDelete, onView, loading, onRefresh }) {
-            const [sortBy, setSortBy] = useState('date');
-            const [filterType, setFilterType] = useState('all');
-            const [searchTerm, setSearchTerm] = useState('');
+        function ShiftList({ shifts, onEdit, onDelete, onView, onStartNew, loading, onRefresh }) {
+            const [valueMode, setValueMode] = useState('tips'); // tips | earnings
 
-            const filteredShifts = useMemo(() => {
-                let filtered = [...shifts];
-
-                // Filter by type
-                if (filterType !== 'all') {
-                    filtered = filtered.filter(s => s.data.type === filterType);
-                }
-
-                // Search
-                if (searchTerm) {
-                    filtered = filtered.filter(s => 
-                        s.data.date.includes(searchTerm) ||
-                        s.data.myName?.toLowerCase().includes(searchTerm.toLowerCase())
-                    );
-                }
-
-                // Sort
-                filtered.sort((a, b) => {
-                    if (sortBy === 'date') {
-                        return new Date(b.data.date) - new Date(a.data.date);
-                    } else if (sortBy === 'earnings') {
-                        return (b.data.earnings?.total || 0) - (a.data.earnings?.total || 0);
-                    }
-                    return 0;
-                });
-
-                return filtered;
-            }, [shifts, sortBy, filterType, searchTerm]);
-
-            const stats = useMemo(() => {
-                const totalEarnings = shifts.reduce((sum, s) => sum + (s.data.earnings?.total || 0), 0);
-                const totalHours = shifts.reduce((sum, s) => sum + (s.data.summary?.hours || 0), 0);
-                const avgHourly = totalHours > 0 ? totalEarnings / totalHours : 0;
-
-                return { totalEarnings, totalHours, avgHourly, shiftCount: shifts.length };
+            const sortedShifts = useMemo(() => {
+                return [...shifts].sort((a, b) => new Date(b.data.date) - new Date(a.data.date)).slice(0, 20);
             }, [shifts]);
 
+            const handleCalendarSelect = useCallback(
+                (dateKey, shiftForDay) => {
+                    if (shiftForDay && onEdit) {
+                        onEdit(shiftForDay);
+                    } else if (onStartNew) {
+                        onStartNew(dateKey);
+                    }
+                },
+                [onEdit, onStartNew]
+            );
+
+            const formatDisplayDate = (dateString) => {
+                if (!dateString) return { label: '—', sublabel: '' };
+                const date = new Date(dateString);
+                if (Number.isNaN(date.getTime())) {
+                    return { label: dateString, sublabel: '' };
+                }
+                const label = date.toLocaleDateString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                });
+                const sublabel = date.toLocaleDateString('en-US', {
+                    weekday: 'long',
+                });
+                const full = date.toLocaleDateString('en-US', {
+                    weekday: 'long',
+                    month: 'long',
+                    day: 'numeric',
+                    year: 'numeric',
+                });
+                return { label: label.toUpperCase(), sublabel, full };
+            };
+
+            const shiftTypeIcons = {
+                day: 'fa-sun',
+                night: 'fa-moon',
+                double: 'fa-circle-half-stroke',
+            };
+
+            const formatCurrency = (value) => {
+                const amount = Number(value || 0);
+                return `$${amount.toFixed(2)}`;
+            };
+
+            const summarizeEarnings = (earnings) => {
+                if (!earnings) return 'Tips';
+                const parts = [];
+                if (earnings.tips) parts.push('Tips');
+                if (earnings.wage) parts.push('Wage');
+                if (earnings.overtime) parts.push('Overtime');
+                if (earnings.chump) parts.push('Chump');
+                if (earnings.consideration) parts.push('Consideration');
+                if (earnings.swindle) parts.push('Adjustments');
+                return parts.length ? parts.join(' + ') : 'Earnings';
+            };
+
+            const getPartySummary = (shift) => {
+                const parties = Object.values(shift.data.parties || {});
+                if (!parties.length) return { label: 'Parties', tooltip: 'No parties logged' };
+                const tooltip = parties
+                    .map((party) => {
+                        const name = party.name || 'Party';
+                        const start = formatTimeDisplay(party.time?.start) || '--';
+                        const end = formatTimeDisplay(party.time?.end) || '--';
+                        return `${name} (${start} – ${end})`;
+                    })
+                    .join('\n');
+                return { label: `${parties.length} party${parties.length > 1 ? 'ies' : ''}`, tooltip };
+            };
+
             return (
-                <div className="space-y-6 animate-slide-in">
-                    {/* Stats Cards */}
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        <StatCard
-                            icon="fa-calendar-check"
-                            label="Total Shifts"
-                            value={stats.shiftCount}
-                            gradient="from-blue-500 to-blue-600"
-                        />
-                        <StatCard
-                            icon="fa-dollar-sign"
-                            label="Total Earnings"
-                            value={`$${stats.totalEarnings.toFixed(2)}`}
-                            gradient="from-green-500 to-green-600"
-                        />
-                        <StatCard
-                            icon="fa-clock"
-                            label="Total Hours"
-                            value={stats.totalHours.toFixed(1)}
-                            gradient="from-purple-500 to-purple-600"
-                        />
-                        <StatCard
-                            icon="fa-chart-line"
-                            label="Avg Hourly"
-                            value={`$${stats.avgHourly.toFixed(2)}`}
-                            gradient="from-orange-500 to-orange-600"
-                        />
-                    </div>
+                <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-6 animate-slide-in">
+                    <MonthlyCalendar shifts={shifts} onSelectDay={handleCalendarSelect} />
 
-                    <MonthlyCalendar shifts={shifts} onSelectShift={onView} />
-
-                    {/* Filters */}
-                    <div className="glass rounded-xl shadow-lg p-4 border border-slate-800/40">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="glass rounded-xl shadow-lg border border-slate-800/40">
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/50 px-4 py-3">
                             <div>
-                                <label className="block text-sm font-medium text-slate-300 mb-2">Search</label>
-                                <input
-                                    type="text"
-                                    value={searchTerm}
-                                    onChange={(e) => setSearchTerm(e.target.value)}
-                                    placeholder="Search by date or name..."
-                                    className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 text-slate-100"
-                                />
+                                <h3 className="text-sm font-semibold text-slate-100">Recent Shifts</h3>
+                                <p className="text-xs text-slate-400">Last 20 entries</p>
                             </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-300 mb-2">Filter by Type</label>
-                                <select
-                                    value={filterType}
-                                    onChange={(e) => setFilterType(e.target.value)}
-                                    className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 text-slate-100"
+                            <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-1 bg-slate-900/60 border border-slate-700 rounded-lg p-1">
+                                    {['tips', 'earnings'].map((mode) => (
+                                        <button
+                                            key={mode}
+                                            type="button"
+                                            onClick={() => setValueMode(mode)}
+                                            className={`px-2.5 py-1 text-xs rounded-md transition ${
+                                                valueMode === mode
+                                                    ? 'bg-cyan-500/30 text-cyan-100 border border-cyan-400/40'
+                                                    : 'text-slate-400 hover:text-slate-200'
+                                            }`}
+                                        >
+                                            {mode === 'tips' ? 'Tips' : 'Earnings'}
+                                        </button>
+                                    ))}
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={onRefresh}
+                                    disabled={loading}
+                                    className="h-8 w-8 flex items-center justify-center rounded-lg border border-slate-700 text-slate-300 hover:border-cyan-500/40 disabled:opacity-50"
+                                    title="Refresh shifts"
                                 >
-                                    <option value="all">All Shifts</option>
-                                    <option value="day">Day Shifts</option>
-                                    <option value="night">Night Shifts</option>
-                                    <option value="double">Double Shifts</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-300 mb-2">Sort By</label>
-                                <select
-                                    value={sortBy}
-                                    onChange={(e) => setSortBy(e.target.value)}
-                                    className="w-full px-4 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:ring-2 focus:ring-cyan-500 text-slate-100"
-                                >
-                                    <option value="date">Date (Newest First)</option>
-                                    <option value="earnings">Earnings (Highest First)</option>
-                                </select>
+                                      <i className={`fas ${loading ? 'fa-spinner fa-spin' : 'fa-rotate-right'}`}></i>
+                                </button>
                             </div>
                         </div>
-                        <button
-                            onClick={onRefresh}
-                            disabled={loading}
-                            className="mt-4 w-full bg-slate-900/70 text-cyan-200 px-4 py-2 rounded-xl border border-slate-700 hover:border-cyan-500 transition-all duration-300 disabled:opacity-50"
-                        >
-                            <i className="fas fa-sync-alt mr-2"></i>
-                            {loading ? 'Refreshing...' : 'Refresh Data'}
-                        </button>
-                    </div>
 
-                    {/* Shift Cards */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                        {filteredShifts.length === 0 ? (
-                            <div className="col-span-full glass rounded-xl p-12 text-center border border-slate-800/40">
-                                <i className="fas fa-inbox text-6xl text-slate-600 mb-4"></i>
-                                <p className="text-slate-300 text-lg">No shifts found</p>
-                                <p className="text-slate-500 text-sm">Create your first shift to get started</p>
-                            </div>
-                        ) : (
-                            filteredShifts.map((shift) => (
-                                <ShiftCard
-                                    key={shift.id}
-                                    shift={shift}
-                                    onView={() => onView(shift)}
-                                    onEdit={() => onEdit(shift)}
-                                    onDelete={() => onDelete(shift.id)}
-                                />
-                            ))
-                        )}
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-slate-800/70 text-sm">
+                                <thead className="bg-slate-900/60 text-slate-400 uppercase tracking-widest text-[11px]">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left font-semibold">Date</th>
+                                        <th className="px-4 py-3 text-left font-semibold">Hours</th>
+                                        <th className="px-4 py-3 text-left font-semibold">Parties</th>
+                                        <th className="px-4 py-3 text-left font-semibold">{valueMode === 'tips' ? 'Tips' : 'Earnings'}</th>
+                                        <th className="px-4 py-3 text-left font-semibold">{valueMode === 'tips' ? 'Tips / Hour' : 'Rate'}</th>
+                                        <th className="px-4 py-3 text-right font-semibold">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800/70">
+                                    {sortedShifts.length === 0 ? (
+                                        <tr>
+                                            <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                                                No shifts recorded yet.
+                                            </td>
+                                        </tr>
+                                    ) : (
+                                        sortedShifts.map((shift) => {
+                                            const dateInfo = formatDisplayDate(shift.data.date);
+                                            const hours = Number(shift.data.summary?.hours ?? 0);
+                                            const baseStart = formatTimeDisplay(shift.data.time?.base?.start) || '--';
+                                            const baseEnd = formatTimeDisplay(shift.data.time?.base?.end) || '--';
+                                            const clockStart = formatTimeDisplay(shift.data.wage?.clock?.start) || '--';
+                                            const clockEnd = formatTimeDisplay(shift.data.wage?.clock?.end) || '--';
+                                            const tipHours = Number(shift.data.time?.tips?.hours ?? shift.data.summary?.hours ?? 0);
+                                            const earningsTotal = Number(shift.data.earnings?.total ?? 0);
+                                            const rawTips = shift.data.tips?._total;
+                                            const tipsTotal = Number(
+                                                rawTips !== undefined && rawTips !== '' ? rawTips : shift.data.earnings?.tips ?? 0
+                                            );
+                                            const value = valueMode === 'tips' ? tipsTotal : earningsTotal;
+                                            const rate = hours > 0 ? value / hours : 0;
+                                            const shiftType = shift.data.type || 'unknown';
+                                            const shiftIcon = shiftTypeIcons[shiftType] || 'fa-circle';
+                                            const partySummary = getPartySummary(shift);
+                                            const hoursTooltip = [
+                                                `Shift: ${hours.toFixed(2)}h (${baseStart} → ${baseEnd})`,
+                                                `Clock: ${clockStart} → ${clockEnd}`,
+                                                `Tip hours: ${tipHours.toFixed(2)}h`,
+                                            ].join('\n');
+                                            const breakdown = valueMode === 'tips' ? 'Reported tips' : summarizeEarnings(shift.data.earnings);
+
+                                            return (
+                                                <tr
+                                                    key={shift.id}
+                                                    className="hover:bg-slate-900/40 transition cursor-pointer"
+                                                    onClick={() => onView && onView(shift)}
+                                                >
+                                                    <td className="px-4 py-3 whitespace-nowrap">
+                                                        <div className="text-[10px] text-slate-500">
+                                                            {dateInfo.full || shift.data.date || '—'}
+                                                        </div>
+                                                        <div className="mt-1 text-sm font-semibold text-slate-100 flex items-center gap-2">
+                                                            {dateInfo.label}
+                                                            <span
+                                                                className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-900/70 border border-slate-700 text-[11px] text-slate-300"
+                                                                title={shift.data.type ? `${shift.data.type} shift` : 'Shift type not set'}
+                                                            >
+                                                                <i className={`fas ${shiftIcon}`}></i>
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-xs text-slate-500">{dateInfo.sublabel}</div>
+                                                    </td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">
+                                                        <div className="text-sm font-semibold text-slate-100" title={hoursTooltip}>
+                                                            {hours.toFixed(1)}h
+                                                        </div>
+                                                        <div className="text-xs text-slate-500">{`${baseStart} → ${baseEnd}`}</div>
+                                                    </td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">
+                                                        <div className="text-xs uppercase tracking-wide text-slate-500">Parties</div>
+                                                        <div
+                                                            className="mt-1 inline-flex items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-xs text-cyan-100"
+                                                            title={partySummary.tooltip}
+                                                        >
+                                                            <i className="fas fa-champagne-glasses"></i>
+                                                            {partySummary.label}
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">
+                                                        <div className="text-xs uppercase tracking-wide text-slate-500">{breakdown}</div>
+                                                        <div className="text-sm font-semibold text-slate-100">
+                                                            {formatCurrency(value)}
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">
+                                                        <div className="text-xs uppercase tracking-wide text-slate-500">
+                                                            {valueMode === 'tips' ? 'Tips ÷ Hours' : 'Value ÷ Hours'}
+                                                        </div>
+                                                        <div className="text-sm font-semibold text-slate-100">
+                                                            {hours > 0 ? formatCurrency(rate) : '$0.00'}
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">
+                                                        <div className="flex justify-end items-center gap-2 text-slate-300">
+                                                            <button
+                                                                type="button"
+                                                                className="h-8 w-8 flex items-center justify-center rounded-lg border border-slate-700 hover:border-cyan-500/40"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    onView && onView(shift);
+                                                                }}
+                                                                title={`View ${dateInfo.full || shift.data.date}`}
+                                                            >
+                                                                <i className="fas fa-eye text-xs"></i>
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                className="h-8 w-8 flex items-center justify-center rounded-lg border border-slate-700 hover:border-cyan-500/40"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    onEdit && onEdit(shift);
+                                                                }}
+                                                                title="Edit shift"
+                                                            >
+                                                                <i className="fas fa-pen text-xs"></i>
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                className="h-8 w-8 flex items-center justify-center rounded-lg border border-rose-500/40 text-rose-300 hover:bg-rose-500/20"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    onDelete && onDelete(shift.id);
+                                                                }}
+                                                                title="Delete shift"
+                                                            >
+                                                                <i className="fas fa-trash text-xs"></i>
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             );
@@ -2316,13 +2482,16 @@
             const baseCutSet = new Set();
             if (type === 'day') {
                 baseCutSet.add('day');
+                baseCutSet.add('mid');
             } else if (type === 'night') {
                 baseCutSet.add('night');
             } else if (type === 'double') {
                 baseCutSet.add('day');
+                baseCutSet.add('mid');
                 baseCutSet.add('night');
             } else {
                 baseCutSet.add('day');
+                baseCutSet.add('mid');
             }
 
             const requiredPartyCuts = Object.entries(normalizedParties)
@@ -2668,6 +2837,7 @@
             const [cutSnapshots, setCutSnapshots] = useState({});
             const [expandedParties, setExpandedParties] = useState({});
             const [partySnapshots, setPartySnapshots] = useState({});
+            const [expandedCrewRows, setExpandedCrewRows] = useState({});
             const shiftTypeDropdownRef = useRef(null);
             const bartenderDirectory = useMemo(() => {
                 if (!coworkerDirectory.length) return [];
@@ -2713,6 +2883,7 @@
                 setCutSnapshots({});
                 setExpandedParties({});
                 setPartySnapshots({});
+                setExpandedCrewRows({});
                 setSectionOpen({ wage: false, overtime: false, chump: false });
             }, [initialFormSnapshot]);
 
@@ -3144,41 +3315,118 @@
                 });
             };
 
-            const applyFallbackToBartenders = (field) => {
-                const fallback = formData.coworkers?.estimates?.[field];
-                if (!fallback) return;
-                let snapshot = null;
-                setFormData((prev) => {
-                    const next = JSON.parse(JSON.stringify(prev));
-                    const list = next.coworkers?.bartenders || [];
-                    list.forEach((entry) => {
-                        if (field === 'fallbackEnd' && !entry.end) {
-                            entry.end = fallback;
-                        }
-                        if (field === 'fallbackActualEnd' && !entry.actualEnd) {
-                            entry.actualEnd = fallback;
-                        }
+            const applyFallbackToBartenders = () => {};
+
+            const crewRows = useMemo(() => {
+                const rows = [];
+                const pushRow = (roleKey, roleLabel, member, index) => {
+                    if (!member) return;
+                    rows.push({
+                        id: `${roleKey}-${index}`,
+                        roleKey,
+                        roleLabel,
+                        index,
+                        member,
                     });
-                    snapshot = next;
-                    return next;
+                };
+
+                (formData.coworkers?.bartenders || []).forEach((member, index) =>
+                    pushRow('bartenders', 'Bartender', member, index)
+                );
+                (formData.coworkers?.servers || []).forEach((member, index) =>
+                    pushRow('servers', 'Server', member, index)
+                );
+                (formData.coworkers?.support || []).forEach((member, index) =>
+                    pushRow('support', 'Support', member, index)
+                );
+
+                const roleOrder = { bartenders: 0, servers: 1, support: 2 };
+                rows.sort((a, b) => {
+                    if (a.member?.isSelf && !b.member?.isSelf) return -1;
+                    if (!a.member?.isSelf && b.member?.isSelf) return 1;
+                    const roleDiff = (roleOrder[a.roleKey] || 0) - (roleOrder[b.roleKey] || 0);
+                    if (roleDiff !== 0) return roleDiff;
+                    return a.index - b.index;
                 });
-                if (snapshot) {
-                    setTimeDrafts(buildInitialTimeDrafts(snapshot));
-                    setTimeErrors((prev) => {
-                        if (!prev || Object.keys(prev).length === 0) return prev;
-                        const nextErrors = { ...prev };
-                        (snapshot.coworkers?.bartenders || []).forEach((_, idx) => {
-                            if (field === 'fallbackEnd') {
-                                delete nextErrors[`coworkers.bartenders.${idx}.end`];
+
+                return rows;
+            }, [formData.coworkers]);
+
+            const addCrewMember = (roleKey) => {
+                if (roleKey === 'servers') {
+                    addServerRow();
+                    return;
+                }
+                if (roleKey === 'support') {
+                    addSupportRow();
+                    return;
+                }
+                addBartenderRow();
+            };
+
+            const removeCrewMember = (roleKey, index) => {
+                if (roleKey === 'servers') {
+                    removeServerRow(index);
+                    return;
+                }
+                if (roleKey === 'support') {
+                    removeSupportRow(index);
+                    return;
+                }
+                removeBartenderRow(index);
+            };
+
+            const handleCrewNameInput = (roleKey, index, value) => {
+                if (roleKey === 'servers') {
+                    handleServerNameChange(index, value);
+                    return;
+                }
+                if (roleKey === 'support') {
+                    handleSupportNameChange(index, value);
+                    return;
+                }
+                handleBartenderNameChange(index, value);
+            };
+
+            const toggleCrewRow = (rowId) => {
+                setExpandedCrewRows((prev) => ({
+                    ...prev,
+                    [rowId]: !prev[rowId],
+                }));
+            };
+
+            const commitCrewTime = (roleKey, index, field, rawValue, options = {}) => {
+                const path = `coworkers.${roleKey}.${index}.${field}`;
+                const parsed = commitTimeValue(path, rawValue, options);
+                if (parsed && parsed.ok && (field === 'start' || field === 'end')) {
+                    setFormData((prev) => {
+                        const next = JSON.parse(JSON.stringify(prev));
+                        const target = next.coworkers?.[roleKey]?.[index];
+                        if (target) {
+                            if (field === 'start') {
+                                target.actualStart = parsed.normalized;
+                            } else if (field === 'end') {
+                                target.actualEnd = parsed.normalized;
                             }
-                            if (field === 'fallbackActualEnd') {
-                                delete nextErrors[`coworkers.bartenders.${idx}.actualEnd`];
-                            }
-                        });
-                        return nextErrors;
+                        }
+                        return next;
                     });
                 }
+                return parsed;
             };
+
+            const crewLocationOptions = [
+                '',
+                'Main',
+                'Main • Service',
+                'Main • Pit',
+                'Main • Middle',
+                'Deck',
+                'Upper',
+                'Support',
+                'Dining',
+                'Event',
+            ];
 
             useEffect(() => {
                 if (shiftTypeMode !== 'auto') return;
@@ -4362,12 +4610,213 @@
                                             </button>
                                         </div>
                                     </div>
-                                    <p className="text-xs text-slate-400">
-                                        Track who was on the floor with you, their tentative schedule, actual times, and where they landed.
-                                        Use the quick buttons to populate blanks or adjust estimates as the night unfolds.
-                                    </p>
+                    <p className="text-xs text-slate-400">
+                        Track who worked with you, their tip hours, and where they posted up. Expand a row for deeper notes.
+                    </p>
 
-                                    <div className="space-y-6">
+                    <div className="overflow-x-auto rounded-xl border border-slate-800/60">
+                        <table className="min-w-full divide-y divide-slate-800/70 text-sm">
+                            <thead className="bg-slate-900/60 text-slate-400 uppercase tracking-widest text-[11px]">
+                                <tr>
+                                    <th scope="col" className="px-3 py-3 text-left font-semibold">Crew Member</th>
+                                    <th scope="col" className="px-3 py-3 text-left font-semibold">Tip Start</th>
+                                    <th scope="col" className="px-3 py-3 text-left font-semibold">Tip End</th>
+                                    <th scope="col" className="px-3 py-3 text-left font-semibold">Location</th>
+                                    <th scope="col" className="px-3 py-3 text-right font-semibold">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/70">
+                                {crewRows.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={5} className="px-4 py-6 text-center text-slate-400">
+                                            No crew logged yet. Add teammates to capture their tip hours.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    crewRows.map((row) => {
+                                        const member = row.member || {};
+                                        const expanded = !!expandedCrewRows[row.id];
+                                        const startPath = `coworkers.${row.roleKey}.${row.index}.start`;
+                                        const endPath = `coworkers.${row.roleKey}.${row.index}.end`;
+                                        const locationPath = `coworkers.${row.roleKey}.${row.index}.location`;
+                                        return (
+                                            <React.Fragment key={row.id}>
+                                                <tr className={`hover:bg-slate-900/50 transition ${member.isSelf ? 'bg-cyan-500/5' : ''}`}>
+                                                    <td className="px-3 py-3 align-top">
+                                                        <div className="flex items-start gap-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => toggleCrewRow(row.id)}
+                                                                className="mt-1 h-6 w-6 flex items-center justify-center rounded-lg border border-slate-700 text-slate-300 hover:border-cyan-500/40"
+                                                                title={expanded ? 'Collapse details' : 'Expand details'}
+                                                            >
+                                                                <i className={`fas fa-chevron-${expanded ? 'up' : 'down'} text-xs`}></i>
+                                                            </button>
+                                                            <div className="flex-1 space-y-1">
+                                                                <input
+                                                                    type="text"
+                                                                    list={
+                                                                        row.roleKey === 'servers'
+                                                                            ? 'server-name-options'
+                                                                            : row.roleKey === 'support'
+                                                                                ? 'support-name-options'
+                                                                                : 'bartender-name-options'
+                                                                    }
+                                                                    value={member.name || ''}
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                    onChange={(e) => handleCrewNameInput(row.roleKey, row.index, e.target.value)}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:outline-none focus:ring-1 focus:ring-cyan-500 text-slate-100"
+                                                                    placeholder="Crew member"
+                                                                />
+                                                                <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+                                                                    <span>{row.roleLabel}</span>
+                                                                    {member.isSelf && <span className="text-cyan-300">You</span>}
+                                                                    {member.isManager && <span className="text-amber-300">Mgr</span>}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-3 py-3 align-top">
+                                                        <input
+                                                            type="text"
+                                                            inputMode="numeric"
+                                                            value={getTimeDraftValue(startPath)}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            onChange={(e) => handleTimeDraftChange(startPath, e.target.value)}
+                                                            onBlur={(e) => commitCrewTime(row.roleKey, row.index, 'start', e.target.value, { mode: 'start' })}
+                                                            onFocus={(e) => e.target.select()}
+                                                            placeholder="5"
+                                                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:outline-none focus:ring-1 focus:ring-cyan-500 text-slate-100"
+                                                        />
+                                                        {timeErrors[startPath] && (
+                                                            <p className="text-xs text-amber-400 mt-1">{timeErrors[startPath]}</p>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-3 py-3 align-top">
+                                                        <input
+                                                            type="text"
+                                                            inputMode="numeric"
+                                                            value={getTimeDraftValue(endPath)}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            onChange={(e) => handleTimeDraftChange(endPath, e.target.value)}
+                                                            onBlur={(e) =>
+                                                                commitCrewTime(row.roleKey, row.index, 'end', e.target.value, {
+                                                                    mode: 'end',
+                                                                    referenceStart: member.start || formData.time?.base?.start,
+                                                                })
+                                                            }
+                                                            onFocus={(e) => e.target.select()}
+                                                            placeholder="11"
+                                                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:outline-none focus:ring-1 focus:ring-cyan-500 text-slate-100"
+                                                        />
+                                                        {timeErrors[endPath] && (
+                                                            <p className="text-xs text-amber-400 mt-1">{timeErrors[endPath]}</p>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-3 py-3 align-top">
+                                                        <input
+                                                            type="text"
+                                                            list="crew-location-options"
+                                                            value={member.location || ''}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            onChange={(e) => updateFormPath(locationPath, e.target.value)}
+                                                            placeholder="Main, Deck..."
+                                                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:outline-none focus:ring-1 focus:ring-cyan-500 text-slate-100"
+                                                        />
+                                                    </td>
+                                                    <td className="px-3 py-3 align-top">
+                                                        <div className="flex justify-end gap-2">
+                                                            <button
+                                                                type="button"
+                                                                className="h-8 w-8 flex items-center justify-center rounded-lg border border-slate-700 text-slate-300 hover:border-cyan-500/40"
+                                                                onClick={() => toggleCrewRow(row.id)}
+                                                                title={expanded ? 'Hide details' : 'Show details'}
+                                                            >
+                                                                <i className="fas fa-layer-group text-xs"></i>
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                disabled={member.isSelf}
+                                                                className={`h-8 w-8 flex items-center justify-center rounded-lg border ${
+                                                                    member.isSelf
+                                                                        ? 'border-slate-800 text-slate-600 cursor-not-allowed'
+                                                                        : 'border-rose-500/40 text-rose-300 hover:bg-rose-500/20'
+                                                                }`}
+                                                                onClick={() => removeCrewMember(row.roleKey, row.index)}
+                                                                title={member.isSelf ? 'Cannot remove yourself' : 'Remove from crew'}
+                                                            >
+                                                                <i className="fas fa-trash text-xs"></i>
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                                {expanded && (
+                                                    <tr className="bg-slate-900/40">
+                                                        <td colSpan={5} className="px-6 py-4">
+                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-slate-200">
+                                                                {row.roleKey === 'servers' && (
+                                                                    <React.Fragment>
+                                                                        <div className="space-y-2">
+                                                                            <label className="text-xs uppercase text-slate-500 block">Cut Order</label>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={member.order || ''}
+                                                                                onChange={(e) => updateFormPath(`coworkers.servers.${row.index}.order`, e.target.value)}
+                                                                                className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                                placeholder="1st"
+                                                                            />
+                                                                        </div>
+                                                                        <div className="space-y-2">
+                                                                            <label className="text-xs uppercase text-slate-500 block">Tip-Out</label>
+                                                                            <input
+                                                                                type="text"
+                                                                                inputMode="decimal"
+                                                                                value={member.tipOut || ''}
+                                                                                onChange={(e) => updateFormPath(`coworkers.servers.${row.index}.tipOut`, e.target.value)}
+                                                                                className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                                placeholder="20"
+                                                                            />
+                                                                        </div>
+                                                                    </React.Fragment>
+                                                                )}
+                                                                {row.roleKey === 'support' && (
+                                                                    <div className="space-y-2">
+                                                                        <label className="text-xs uppercase text-slate-500 block">Role</label>
+                                                                        <select
+                                                                            value={member.role || 'Host'}
+                                                                            onChange={(e) => updateFormPath(`coworkers.support.${row.index}.role`, e.target.value)}
+                                                                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                        >
+                                                                            {SUPPORT_ROLE_OPTIONS.map((role) => (
+                                                                                <option key={role} value={role}>
+                                                                                    {role}
+                                                                                </option>
+                                                                            ))}
+                                                                        </select>
+                                                                    </div>
+                                                                )}
+                                                                <div className="md:col-span-2 space-y-2">
+                                                                    <label className="text-xs uppercase text-slate-500 block">Notes</label>
+                                                                    <textarea
+                                                                        value={member.notes || ''}
+                                                                        onChange={(e) => updateFormPath(`coworkers.${row.roleKey}.${row.index}.notes`, e.target.value)}
+                                                                        className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl focus:outline-none focus:ring-1 focus:ring-cyan-500 min-h-[72px]"
+                                                                        placeholder="Assignments, party coverage, cut order notes..."
+                                                                    ></textarea>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </React.Fragment>
+                                        );
+                                    })
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="space-y-6 hidden">
                                         <div className="space-y-3">
                                             <div className="flex flex-wrap items-center justify-between gap-2">
                                                 <h4 className="text-sm font-semibold text-slate-200">Night Crew · Bartenders</h4>
@@ -4878,7 +5327,12 @@
                                         </div>
                                     </div>
 
-                                    <datalist id="bartender-name-options">
+                    <datalist id="crew-location-options">
+                        {crewLocationOptions.map((option, idx) => (
+                            <option key={`crew-location-${idx || 'empty'}`} value={option} />
+                        ))}
+                    </datalist>
+                    <datalist id="bartender-name-options">
                                         {bartenderDirectory.map((member) => (
                                             <option key={`bartender-option-${member.id}`} value={member.name} />
                                         ))}
