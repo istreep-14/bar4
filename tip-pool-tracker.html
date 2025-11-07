@@ -75,7 +75,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useRef } = React;
+        const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
         const APP_SERVER_PORT = parseInt(window.TIP_POOL_APP_PORT || '8000', 10);
         const CONTROL_SERVER_ORIGIN = window.TIP_POOL_CONTROL_ORIGIN || 'http://localhost:4100';
@@ -278,13 +278,14 @@
                   spreadsheetId: '',
                   sheetName: 'Shifts',
               });
-              const [showConfig, setShowConfig] = useState(true);
+            const [showConfig, setShowConfig] = useState(true);
               const [loading, setLoading] = useState(false);
               const [error, setError] = useState(null);
               const [serverStatus, setServerStatus] = useState({
                   state: 'checking',
                   message: `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
               });
+            const [coworkerDirectory, setCoworkerDirectory] = useState([]);
 
               useEffect(() => {
                   let cancelled = false;
@@ -312,10 +313,10 @@
                           setServerStatus({ state: 'ready', message: '' });
                       } else {
                           const reason = result.error?.message || 'Control server is not reachable';
-                          setServerStatus({
-                              state: 'error',
-                              message: `Could not auto-start the local server on port ${APP_SERVER_PORT}. ${reason}. Make sure the control server is running at ${CONTROL_SERVER_ORIGIN}.`,
-                          });
+                            setServerStatus({
+                                state: 'error',
+                                message: `Could not auto-start the local server on port ${APP_SERVER_PORT}. ${reason}. Try running "node control-server.js" or "./start-server.sh ${APP_SERVER_PORT}" in a terminal, then refresh.`,
+                            });
                       }
                   };
 
@@ -400,10 +401,54 @@
                 }
             };
 
+            const loadCoworkerDirectory = useCallback(async () => {
+                if (!config.spreadsheetId || !isAuthenticated) return;
+                try {
+                    const rows = await sheetsAPI.readData(config.spreadsheetId, 'Coworkers!A2:F');
+                    const directory = (rows || [])
+                        .map((row, index) => {
+                            const [trappeId, name, firstName, lastName, positionsRaw, managerRaw] = row;
+                            const fallbackName = [firstName, lastName].filter(Boolean).join(' ');
+                            const normalizedName = (name || fallbackName || '').trim();
+                            if (!normalizedName) return null;
+                            const positions = (positionsRaw || '')
+                                .split(/[,/]/)
+                                .map((token) => token.trim())
+                                .filter(Boolean);
+                            const positionsNormalized = positions.map((p) => p.toLowerCase());
+                            const managerFlag = String(managerRaw || '').trim().toLowerCase();
+                            const isManager = managerFlag === 'true' || managerFlag === 'yes' || managerFlag === '1';
+                            const isSelf =
+                                normalizedName.toLowerCase() === 'ian' ||
+                                (firstName || '').trim().toLowerCase() === 'ian';
+                            return {
+                                id: trappeId || `coworker_${index}`,
+                                name: normalizedName,
+                                firstName: firstName || '',
+                                lastName: lastName || '',
+                                positions,
+                                positionsNormalized,
+                                isManager,
+                                isSelf,
+                            };
+                        })
+                        .filter(Boolean);
+                    setCoworkerDirectory(directory);
+                } catch (directoryError) {
+                    console.warn('Failed to load coworker directory', directoryError);
+                    setCoworkerDirectory([]);
+                }
+            }, [config.spreadsheetId, isAuthenticated]);
+
             useEffect(() => {
                 if (!isAuthenticated || !config.spreadsheetId) return;
                 loadShifts();
             }, [isAuthenticated, config.spreadsheetId, config.sheetName]);
+
+            useEffect(() => {
+                if (!isAuthenticated || !config.spreadsheetId) return;
+                loadCoworkerDirectory();
+            }, [isAuthenticated, config.spreadsheetId, loadCoworkerDirectory]);
 
             const saveShift = async (shiftData) => {
                 if (!config.spreadsheetId || !isAuthenticated) return;
@@ -591,14 +636,16 @@
                                 {view === 'create' && (
                                     <ShiftForm
                                         onSave={saveShift}
-                                        onCancel={() => setView('list')}
+                                          onCancel={() => setView('list')}
+                                          coworkerDirectory={coworkerDirectory}
                                     />
                                 )}
                                 {view === 'edit' && currentShift && (
                                     <ShiftForm
                                         shift={currentShift}
                                         onSave={saveShift}
-                                        onCancel={() => setView('list')}
+                                          onCancel={() => setView('list')}
+                                          coworkerDirectory={coworkerDirectory}
                                     />
                                 )}
                                 {view === 'view' && currentShift && (
@@ -1359,11 +1406,15 @@
             wage: { base: 5.0, hours: 0, total: 0 },
             tips: { _total: 0 },
             cuts: {},
-            coworkers: { bartenders: {}, servers: {} },
-            coworkerStats: {
-                serversCount: '',
-                serverStart: '',
-                serverEndBatch: '',
+            coworkers: {
+                bartenders: [],
+                servers: [],
+                support: [],
+                estimates: {
+                    fallbackEnd: '',
+                    fallbackActualEnd: '',
+                    notes: '',
+                },
             },
             parties: {},
             chump: {
@@ -1454,6 +1505,12 @@
                     start: formatTimeDisplay(data?.wage?.clock?.start),
                     end: formatTimeDisplay(data?.wage?.clock?.end),
                 },
+                crew: {
+                    bartenders: {},
+                    servers: {},
+                    support: {},
+                    estimates: {},
+                },
             };
 
             ['present', 'clock', 'tips', 'working'].forEach((bucket) => {
@@ -1470,6 +1527,38 @@
                     end: formatTimeDisplay(party?.time?.end),
                 };
             });
+
+            (data?.coworkers?.bartenders || []).forEach((member, index) => {
+                drafts.crew.bartenders[index] = {
+                    start: formatTimeDisplay(member?.start),
+                    end: formatTimeDisplay(member?.end),
+                    actualStart: formatTimeDisplay(member?.actualStart),
+                    actualEnd: formatTimeDisplay(member?.actualEnd),
+                };
+            });
+
+            (data?.coworkers?.servers || []).forEach((member, index) => {
+                drafts.crew.servers[index] = {
+                    start: formatTimeDisplay(member?.start),
+                    end: formatTimeDisplay(member?.end),
+                    actualStart: formatTimeDisplay(member?.actualStart),
+                    actualEnd: formatTimeDisplay(member?.actualEnd),
+                };
+            });
+
+            (data?.coworkers?.support || []).forEach((member, index) => {
+                drafts.crew.support[index] = {
+                    start: formatTimeDisplay(member?.start),
+                    end: formatTimeDisplay(member?.end),
+                    actualStart: formatTimeDisplay(member?.actualStart),
+                    actualEnd: formatTimeDisplay(member?.actualEnd),
+                };
+            });
+
+            drafts.crew.estimates = {
+                fallbackEnd: formatTimeDisplay(data?.coworkers?.estimates?.fallbackEnd),
+                fallbackActualEnd: formatTimeDisplay(data?.coworkers?.estimates?.fallbackActualEnd),
+            };
 
             return drafts;
         }
@@ -1763,9 +1852,223 @@
             return changed ? cuts : existingCuts;
         }
 
+        function sanitizeBartenderEntry(entry = {}) {
+            return {
+                id: entry.id || '',
+                name: entry.name || '',
+                start: entry.start || '',
+                end: entry.end || '',
+                actualStart: entry.actualStart || '',
+                actualEnd: entry.actualEnd || '',
+                location: entry.location || '',
+                status: entry.status || 'tentative',
+                notes: entry.notes || '',
+                positions: Array.isArray(entry.positions) ? entry.positions : [],
+                isManager: Boolean(entry.isManager),
+                isSelf: Boolean(entry.isSelf),
+            };
+        }
+
+        function sanitizeServerEntry(entry = {}) {
+            return {
+                id: entry.id || '',
+                name: entry.name || '',
+                start: entry.start || '',
+                end: entry.end || '',
+                actualStart: entry.actualStart || '',
+                actualEnd: entry.actualEnd || '',
+                order: entry.order || '',
+                tipOut: entry.tipOut || '',
+                notes: entry.notes || '',
+            };
+        }
+
+        function sanitizeSupportEntry(entry = {}) {
+            return {
+                id: entry.id || '',
+                name: entry.name || '',
+                role: entry.role || 'Host',
+                start: entry.start || '',
+                end: entry.end || '',
+                actualStart: entry.actualStart || '',
+                actualEnd: entry.actualEnd || '',
+                notes: entry.notes || '',
+            };
+        }
+
+        function normalizeCrewData(raw) {
+            const base = {
+                bartenders: [],
+                servers: [],
+                support: [],
+                estimates: {
+                    fallbackEnd: '',
+                    fallbackActualEnd: '',
+                    notes: '',
+                },
+            };
+
+            if (!raw) return base;
+
+            const result = {
+                bartenders: [],
+                servers: [],
+                support: [],
+                estimates: { ...base.estimates, ...(raw.estimates || {}) },
+            };
+
+            if (Array.isArray(raw.bartenders)) {
+                result.bartenders = raw.bartenders.map((entry) => sanitizeBartenderEntry(entry));
+            } else if (raw.bartenders && typeof raw.bartenders === 'object') {
+                Object.entries(raw.bartenders).forEach(([name, details]) => {
+                    const detailArray = Array.isArray(details) ? details : [];
+                    const schedule = detailArray[1] || '';
+                    let start = '';
+                    let end = '';
+                    if (typeof schedule === 'string' && schedule.includes('-')) {
+                        const [schedStart, schedEnd] = schedule.split('-').map((token) => token.trim());
+                        start = schedStart || '';
+                        end = schedEnd || '';
+                    }
+                    result.bartenders.push(
+                        sanitizeBartenderEntry({
+                            name,
+                            location: detailArray[0] || '',
+                            start,
+                            end,
+                            notes: detailArray.slice(2).join(' • '),
+                        })
+                    );
+                });
+            }
+
+            if (Array.isArray(raw.servers)) {
+                result.servers = raw.servers.map((entry) => sanitizeServerEntry(entry));
+            } else if (raw.servers && typeof raw.servers === 'object') {
+                Object.entries(raw.servers).forEach(([name, details]) => {
+                    const detailArray = Array.isArray(details) ? details : [];
+                    result.servers.push(
+                        sanitizeServerEntry({
+                            name,
+                            start: detailArray[0] || '',
+                            end: detailArray[1] || '',
+                            notes: detailArray.slice(2).join(' • '),
+                        })
+                    );
+                });
+            }
+
+            if (Array.isArray(raw.support)) {
+                result.support = raw.support.map((entry) => sanitizeSupportEntry(entry));
+            }
+
+            return result;
+        }
+
+        function normalizeShiftPayload(shift) {
+            if (!shift) return null;
+            const cloned = JSON.parse(JSON.stringify(shift));
+            cloned.coworkers = normalizeCrewData(cloned.coworkers);
+            return cloned;
+        }
+
+        function upsertSelfCrew(data, directory) {
+            if (!data) return data;
+            const coworkers = data.coworkers || normalizeCrewData();
+            const bartenders = coworkers.bartenders || [];
+            const selfMember = directory.find((member) => member.isSelf);
+            const expectedName = (selfMember?.name || 'Ian').trim().toLowerCase();
+
+            let index = bartenders.findIndex(
+                (entry) =>
+                    entry.isSelf ||
+                    (entry.name || '').trim().toLowerCase() === expectedName
+            );
+
+            const baseStart = data.time?.base?.start || '';
+            const baseEnd = data.time?.base?.end || '';
+
+            if (index === -1) {
+                const next = JSON.parse(JSON.stringify(data));
+                const entry = sanitizeBartenderEntry({
+                    id: selfMember?.id || '',
+                    name: selfMember?.name || 'Ian',
+                    start: baseStart,
+                    end: baseEnd,
+                    actualStart: baseStart,
+                    actualEnd: baseEnd,
+                    status: 'confirmed',
+                    positions: selfMember?.positions || [],
+                    isManager: !!selfMember?.isManager,
+                    isSelf: true,
+                });
+                next.coworkers = next.coworkers ? normalizeCrewData(next.coworkers) : normalizeCrewData();
+                next.coworkers.bartenders = [entry, ...(next.coworkers.bartenders || [])];
+                return next;
+            }
+
+            const candidate = bartenders[index];
+            let changed = false;
+            if (!candidate.isSelf) {
+                changed = true;
+            }
+            if (selfMember) {
+                if (!candidate.id && selfMember.id) changed = true;
+                if ((!candidate.positions || candidate.positions.length === 0) && selfMember.positions?.length) changed = true;
+                if (!candidate.isManager && selfMember.isManager) changed = true;
+            }
+            if (!candidate.start && baseStart) changed = true;
+            if (!candidate.end && baseEnd) changed = true;
+            if (!candidate.actualStart && baseStart) changed = true;
+            if (!candidate.actualEnd && baseEnd) changed = true;
+
+            if (!changed) return data;
+
+            const next = JSON.parse(JSON.stringify(data));
+            const target = next.coworkers.bartenders[index];
+            target.isSelf = true;
+            if (selfMember) {
+                target.id = target.id || selfMember.id || '';
+                if (!target.positions || target.positions.length === 0) {
+                    target.positions = selfMember.positions || [];
+                }
+                if (selfMember.isManager) {
+                    target.isManager = true;
+                }
+            }
+            if (!target.start && baseStart) target.start = baseStart;
+            if (!target.end && baseEnd) target.end = baseEnd;
+            if (!target.actualStart && baseStart) target.actualStart = baseStart;
+            if (!target.actualEnd && baseEnd) target.actualEnd = baseEnd;
+            return next;
+        }
+
+        const BARTENDER_LOCATION_OPTIONS = [
+            { value: '', label: '—' },
+            { value: 'Main', label: 'Main Bar' },
+            { value: 'Main-Service', label: 'Main • Service' },
+            { value: 'Main-Pit', label: 'Main • Pit' },
+            { value: 'Main-Middle', label: 'Main • Middle' },
+            { value: 'Deck', label: 'Deck' },
+            { value: 'Upper', label: 'Upper Event' },
+            { value: 'Support', label: 'Support' },
+        ];
+
+        const SUPPORT_ROLE_OPTIONS = ['Host', 'Busser', 'Doorman', 'Expo', 'Floor'];
+
+        const BARTENDER_STATUS_OPTIONS = [
+            { value: 'tentative', label: 'Tentative' },
+            { value: 'confirmed', label: 'Confirmed' },
+            { value: 'actual', label: 'Actual' },
+        ];
+
         // Shift Form Component (Hybrid Dark UI)
-        function ShiftForm({ shift, onSave, onCancel }) {
-            const [formData, setFormData] = useState(() => deepMergeShift(DEFAULT_SHIFT_TEMPLATE, shift));
+        function ShiftForm({ shift, onSave, onCancel, coworkerDirectory = [] }) {
+            const initialFormSnapshot = useMemo(
+                () => deepMergeShift(DEFAULT_SHIFT_TEMPLATE, normalizeShiftPayload(shift)),
+                [shift]
+            );
+            const [formData, setFormData] = useState(initialFormSnapshot);
             const [panelOpen, setPanelOpen] = useState({
                 timings: false,
                 cuts: false,
@@ -1774,7 +2077,7 @@
                 enhancements: false,
                 drinking: false,
             });
-            const [timeDrafts, setTimeDrafts] = useState(() => buildInitialTimeDrafts(shift || DEFAULT_SHIFT_TEMPLATE));
+            const [timeDrafts, setTimeDrafts] = useState(() => buildInitialTimeDrafts(initialFormSnapshot));
             const [timeErrors, setTimeErrors] = useState({});
             const [shiftTypeMode, setShiftTypeMode] = useState(shift?.type ? 'manual' : 'auto');
             const [shiftTypeMenuOpen, setShiftTypeMenuOpen] = useState(false);
@@ -1783,19 +2086,56 @@
             const [expandedParties, setExpandedParties] = useState({});
             const [partySnapshots, setPartySnapshots] = useState({});
             const shiftTypeDropdownRef = useRef(null);
+            const bartenderDirectory = useMemo(() => {
+                if (!coworkerDirectory.length) return [];
+                return coworkerDirectory.filter((member) => {
+                    const positions = member.positionsNormalized || [];
+                    if (positions.length === 0) return true;
+                    return positions.some((pos) =>
+                        ['bartender', 'bar', 'barback'].some((keyword) => pos.includes(keyword))
+                    );
+                });
+            }, [coworkerDirectory]);
+            const serverDirectory = useMemo(() => {
+                if (!coworkerDirectory.length) return [];
+                return coworkerDirectory.filter((member) => {
+                    const positions = member.positionsNormalized || [];
+                    if (positions.length === 0) return true;
+                    return positions.some((pos) => ['server', 'wait', 'food'].some((keyword) => pos.includes(keyword)));
+                });
+            }, [coworkerDirectory]);
+            const supportDirectory = useMemo(() => {
+                if (!coworkerDirectory.length) return [];
+                return coworkerDirectory.filter((member) => {
+                    const positions = member.positionsNormalized || [];
+                    if (positions.length === 0) return true;
+                    return positions.some((pos) =>
+                        ['host', 'busser', 'door', 'expo', 'support'].some((keyword) => pos.includes(keyword))
+                    );
+                });
+            }, [coworkerDirectory]);
 
             useEffect(() => {
-                const merged = deepMergeShift(DEFAULT_SHIFT_TEMPLATE, shift);
-                setFormData(merged);
-                setTimeDrafts(buildInitialTimeDrafts(merged));
+                setFormData(initialFormSnapshot);
+                setTimeDrafts(buildInitialTimeDrafts(initialFormSnapshot));
                 setTimeErrors({});
-                setShiftTypeMode(shift?.type ? 'manual' : 'auto');
+                setShiftTypeMode(initialFormSnapshot.type ? 'manual' : 'auto');
                 setShiftTypeMenuOpen(false);
                 setExpandedCuts({});
                 setCutSnapshots({});
                 setExpandedParties({});
                 setPartySnapshots({});
-            }, [shift]);
+            }, [initialFormSnapshot]);
+
+            useEffect(() => {
+                if (!coworkerDirectory.length) return;
+                setFormData((prev) => {
+                    const updated = upsertSelfCrew(prev, coworkerDirectory);
+                    if (updated === prev) return prev;
+                    setTimeDrafts(buildInitialTimeDrafts(updated));
+                    return updated;
+                });
+            }, [coworkerDirectory, formData.time?.base?.start, formData.time?.base?.end]);
 
             useEffect(() => {
                 if (!shiftTypeMenuOpen) return undefined;
@@ -1841,6 +2181,18 @@
                 }
                 if (path.startsWith('wage.clock.')) {
                     return path.replace('wage.clock.', 'wage.');
+                }
+                if (path.startsWith('coworkers.bartenders.')) {
+                    return path.replace('coworkers.', 'crew.');
+                }
+                if (path.startsWith('coworkers.servers.')) {
+                    return path.replace('coworkers.', 'crew.');
+                }
+                if (path.startsWith('coworkers.support.')) {
+                    return path.replace('coworkers.', 'crew.');
+                }
+                if (path.startsWith('coworkers.estimates.')) {
+                    return path.replace('coworkers.', 'crew.');
                 }
                 return path;
             };
@@ -1940,6 +2292,227 @@
                 const numeric = typeof value === 'number' ? value : parseFloat(value);
                 if (Number.isNaN(numeric)) return fallback;
                 return numeric;
+            };
+
+            const matchCoworkerByName = (value) => {
+                if (!value) return null;
+                const normalized = value.trim().toLowerCase();
+                if (!normalized) return null;
+                return (
+                    coworkerDirectory.find((member) => {
+                        const nameMatch = member.name?.trim().toLowerCase() === normalized;
+                        if (nameMatch) return true;
+                        const full = [member.firstName, member.lastName].filter(Boolean).join(' ').trim().toLowerCase();
+                        if (full && full === normalized) return true;
+                        if (member.firstName && member.firstName.trim().toLowerCase() === normalized) return true;
+                        return false;
+                    }) || null
+                );
+            };
+
+            const addBartenderRow = (defaults = {}) => {
+                let snapshot = null;
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.coworkers = next.coworkers ? normalizeCrewData(next.coworkers) : normalizeCrewData();
+                    next.coworkers.bartenders = next.coworkers.bartenders || [];
+                    next.coworkers.bartenders.push(sanitizeBartenderEntry(defaults));
+                    snapshot = next;
+                    return next;
+                });
+                if (snapshot) {
+                    setTimeDrafts(buildInitialTimeDrafts(snapshot));
+                }
+            };
+
+            const removeBartenderRow = (index) => {
+                let snapshot = null;
+                setFormData((prev) => {
+                    const list = prev.coworkers?.bartenders || [];
+                    const target = list[index];
+                    if (!target || target.isSelf) return prev;
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.coworkers.bartenders.splice(index, 1);
+                    snapshot = next;
+                    return next;
+                });
+                if (snapshot) {
+                    setTimeDrafts(buildInitialTimeDrafts(snapshot));
+                }
+            };
+
+            const handleBartenderNameChange = (index, value) => {
+                setFormData((prev) => {
+                    const list = prev.coworkers?.bartenders || [];
+                    if (!list[index]) return prev;
+                    const next = JSON.parse(JSON.stringify(prev));
+                    const target = next.coworkers.bartenders[index];
+                    target.name = value;
+                    const match = matchCoworkerByName(value);
+                    if (match) {
+                        target.id = match.id || target.id;
+                        target.positions = match.positions || target.positions || [];
+                        target.isManager = target.isManager || match.isManager;
+                        if (match.isSelf) {
+                            target.isSelf = true;
+                        }
+                    } else if (!target.isSelf) {
+                        target.id = '';
+                        target.isManager = false;
+                    }
+                    return next;
+                });
+            };
+
+            const syncBartenderActualTimes = (index) => {
+                let snapshot = null;
+                setFormData((prev) => {
+                    const list = prev.coworkers?.bartenders || [];
+                    if (!list[index]) return prev;
+                    const next = JSON.parse(JSON.stringify(prev));
+                    const target = next.coworkers.bartenders[index];
+                    if (target.start && !target.actualStart) {
+                        target.actualStart = target.start;
+                    }
+                    if (target.end && !target.actualEnd) {
+                        target.actualEnd = target.end;
+                    }
+                    snapshot = next;
+                    return next;
+                });
+                if (snapshot) {
+                    setTimeDrafts(buildInitialTimeDrafts(snapshot));
+                }
+            };
+
+            const addServerRow = () => {
+                let snapshot = null;
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.coworkers = next.coworkers ? normalizeCrewData(next.coworkers) : normalizeCrewData();
+                    next.coworkers.servers = next.coworkers.servers || [];
+                    next.coworkers.servers.push(sanitizeServerEntry());
+                    snapshot = next;
+                    return next;
+                });
+                if (snapshot) {
+                    setTimeDrafts(buildInitialTimeDrafts(snapshot));
+                }
+            };
+
+            const removeServerRow = (index) => {
+                let snapshot = null;
+                setFormData((prev) => {
+                    const list = prev.coworkers?.servers || [];
+                    if (!list[index]) return prev;
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.coworkers.servers.splice(index, 1);
+                    snapshot = next;
+                    return next;
+                });
+                if (snapshot) {
+                    setTimeDrafts(buildInitialTimeDrafts(snapshot));
+                }
+            };
+
+            const handleServerNameChange = (index, value) => {
+                setFormData((prev) => {
+                    const list = prev.coworkers?.servers || [];
+                    if (!list[index]) return prev;
+                    const next = JSON.parse(JSON.stringify(prev));
+                    const target = next.coworkers.servers[index];
+                    target.name = value;
+                    const match = matchCoworkerByName(value);
+                    if (match) {
+                        target.id = match.id || target.id;
+                    } else {
+                        target.id = '';
+                    }
+                    return next;
+                });
+            };
+
+            const addSupportRow = () => {
+                let snapshot = null;
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.coworkers = next.coworkers ? normalizeCrewData(next.coworkers) : normalizeCrewData();
+                    next.coworkers.support = next.coworkers.support || [];
+                    next.coworkers.support.push(sanitizeSupportEntry());
+                    snapshot = next;
+                    return next;
+                });
+                if (snapshot) {
+                    setTimeDrafts(buildInitialTimeDrafts(snapshot));
+                }
+            };
+
+            const removeSupportRow = (index) => {
+                let snapshot = null;
+                setFormData((prev) => {
+                    const list = prev.coworkers?.support || [];
+                    if (!list[index]) return prev;
+                    const next = JSON.parse(JSON.stringify(prev));
+                    next.coworkers.support.splice(index, 1);
+                    snapshot = next;
+                    return next;
+                });
+                if (snapshot) {
+                    setTimeDrafts(buildInitialTimeDrafts(snapshot));
+                }
+            };
+
+            const handleSupportNameChange = (index, value) => {
+                setFormData((prev) => {
+                    const list = prev.coworkers?.support || [];
+                    if (!list[index]) return prev;
+                    const next = JSON.parse(JSON.stringify(prev));
+                    const target = next.coworkers.support[index];
+                    target.name = value;
+                    const match = matchCoworkerByName(value);
+                    if (match) {
+                        target.id = match.id || target.id;
+                    } else {
+                        target.id = '';
+                    }
+                    return next;
+                });
+            };
+
+            const applyFallbackToBartenders = (field) => {
+                const fallback = formData.coworkers?.estimates?.[field];
+                if (!fallback) return;
+                let snapshot = null;
+                setFormData((prev) => {
+                    const next = JSON.parse(JSON.stringify(prev));
+                    const list = next.coworkers?.bartenders || [];
+                    list.forEach((entry) => {
+                        if (field === 'fallbackEnd' && !entry.end) {
+                            entry.end = fallback;
+                        }
+                        if (field === 'fallbackActualEnd' && !entry.actualEnd) {
+                            entry.actualEnd = fallback;
+                        }
+                    });
+                    snapshot = next;
+                    return next;
+                });
+                if (snapshot) {
+                    setTimeDrafts(buildInitialTimeDrafts(snapshot));
+                    setTimeErrors((prev) => {
+                        if (!prev || Object.keys(prev).length === 0) return prev;
+                        const nextErrors = { ...prev };
+                        (snapshot.coworkers?.bartenders || []).forEach((_, idx) => {
+                            if (field === 'fallbackEnd') {
+                                delete nextErrors[`coworkers.bartenders.${idx}.end`];
+                            }
+                            if (field === 'fallbackActualEnd') {
+                                delete nextErrors[`coworkers.bartenders.${idx}.actualEnd`];
+                            }
+                        });
+                        return nextErrors;
+                    });
+                }
             };
 
             useEffect(() => {
@@ -2340,9 +2913,10 @@
             const headerIcon = shiftTypeMeta.icon || (shiftTypeMode === 'auto' ? 'fa-circle-half-stroke' : 'fa-circle-question');
             const headerGradient = 'from-slate-950 via-slate-900 to-slate-950';
             const partyCount = Object.keys(formData.parties || {}).length;
-            const bartenderCount = Object.keys(formData.coworkers?.bartenders || {}).length;
-            const serverCount = Object.keys(formData.coworkers?.servers || {}).length;
-            const coworkerCount = bartenderCount + serverCount + (parseInt(formData.coworkerStats?.serversCount, 10) || 0);
+            const bartenderCount = (formData.coworkers?.bartenders || []).length;
+            const serverCount = (formData.coworkers?.servers || []).length;
+            const supportCount = (formData.coworkers?.support || []).length;
+            const coworkerCount = bartenderCount + serverCount + supportCount;
             const chumpStatus = formData.chump?.played ? (formData.chump.winner ? 'recorded' : 'pending') : 'not-played';
 
             const quickPanels = [
@@ -3081,101 +3655,570 @@
 
                             {panelOpen.coworkers && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
-                                    <div className="flex items-center justify-between">
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
                                         <button
                                             type="button"
                                             onClick={() => togglePanel('coworkers')}
                                             className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
                                         >
-                                            Coworkers
+                                            Crew Knowledge
                                             <i className={`fas fa-chevron-${panelOpen.coworkers ? 'up' : 'down'} text-xs text-slate-500`}></i>
                                         </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => updateFormPath(`coworkers.bartenders.Temp_${Date.now().toString(36)}`, ['', '', ''])}
-                                            className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
-                                        >
-                                            <i className="fas fa-plus"></i>
-                                            Add Bartender
-                                        </button>
-                                    </div>
-                                    <div className="space-y-4">
-                                        {Object.entries(formData.coworkers?.bartenders || {}).map(([name, details]) => (
-                                            <div key={name} className="grid grid-cols-1 md:grid-cols-5 gap-3 items-center">
-                                                <input
-                                                    type="text"
-                                                    value={name}
-                                                    onChange={(e) => {
-                                                        const nextName = e.target.value || `Crew_${Date.now().toString(36)}`;
-                                                        setFormData((prev) => {
-                                                            const next = JSON.parse(JSON.stringify(prev));
-                                                            const valueRef = next.coworkers.bartenders[name];
-                                                            delete next.coworkers.bartenders[name];
-                                                            next.coworkers.bartenders[nextName] = valueRef;
-                                                            return next;
-                                                        });
-                                                    }}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Name"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    value={details?.[0] || ''}
-                                                    onChange={(e) => updateFormPath(`coworkers.bartenders.${name}.0`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Location"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    value={details?.[1] || ''}
-                                                    onChange={(e) => updateFormPath(`coworkers.bartenders.${name}.1`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Time e.g. 16:00-02:30"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    value={details?.[2] || ''}
-                                                    onChange={(e) => updateFormPath(`coworkers.bartenders.${name}.2`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Hours"
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={() => removeCoworker('bartenders', name)}
-                                                    className="text-xs text-rose-300 hover:text-rose-100 px-3 py-1 border border-rose-500/40 rounded-lg self-start md:self-center"
-                                                >
-                                                    <i className="fas fa-trash"></i>
-                                                </button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <div className="border-t border-slate-800/60 pt-4">
-                                        <h4 className="text-sm uppercase tracking-wider text-slate-500">Server Summary (quick)</h4>
-                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
-                                            <input
-                                                type="number"
-                                                min="0"
-                                                value={formData.coworkerStats?.serversCount || ''}
-                                                onChange={(e) => updateFormPath('coworkerStats.serversCount', e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="# Servers"
-                                            />
-                                            <input
-                                                type="text"
-                                                value={formData.coworkerStats?.serverStart || ''}
-                                                onChange={(e) => updateFormPath('coworkerStats.serverStart', e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="Common start (e.g., 10:00)"
-                                            />
-                                            <input
-                                                type="text"
-                                                value={formData.coworkerStats?.serverEndBatch || ''}
-                                                onChange={(e) => updateFormPath('coworkerStats.serverEndBatch', e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="End times list"
-                                            />
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => addBartenderRow({ status: 'tentative' })}
+                                                className="text-xs px-3 py-1.5 rounded-lg border border-cyan-500/40 text-cyan-200 hover:bg-cyan-500/10"
+                                            >
+                                                <i className="fas fa-user-plus mr-2"></i>Bartender
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={addServerRow}
+                                                className="text-xs px-3 py-1.5 rounded-lg border border-slate-600 text-slate-200 hover:border-cyan-500/40"
+                                            >
+                                                <i className="fas fa-clipboard-list mr-2"></i>Server
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={addSupportRow}
+                                                className="text-xs px-3 py-1.5 rounded-lg border border-slate-600 text-slate-200 hover:border-cyan-500/40"
+                                            >
+                                                <i className="fas fa-user-shield mr-2"></i>Support
+                                            </button>
                                         </div>
                                     </div>
+                                    <p className="text-xs text-slate-400">
+                                        Track who was on the floor with you, their tentative schedule, actual times, and where they landed.
+                                        Use the quick buttons to populate blanks or adjust estimates as the night unfolds.
+                                    </p>
+
+                                    <div className="space-y-6">
+                                        <div className="space-y-3">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <h4 className="text-sm font-semibold text-slate-200">Night Crew · Bartenders</h4>
+                                                <span className="text-xs text-slate-400">{(formData.coworkers?.bartenders || []).length} logged</span>
+                                            </div>
+                                            {(formData.coworkers?.bartenders || []).length === 0 ? (
+                                                <p className="text-sm text-slate-500">No bartenders logged yet. Add the teammates scheduled with you for this shift.</p>
+                                            ) : (
+                                                (formData.coworkers?.bartenders || []).map((member, index) => (
+                                                    <div
+                                                        key={`bartender-${index}`}
+                                                        className={`border border-slate-800/60 rounded-2xl bg-slate-900/40 p-4 space-y-3 ${
+                                                            member.isSelf ? 'border-cyan-500/50 bg-cyan-500/10' : ''
+                                                        }`}
+                                                    >
+                                                        <div className="flex flex-wrap items-start gap-3">
+                                                            <div className="flex-1 min-w-[180px]">
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Name</label>
+                                                                <input
+                                                                    type="text"
+                                                                    list="bartender-name-options"
+                                                                    value={member.name || ''}
+                                                                    onChange={(e) => handleBartenderNameChange(index, e.target.value)}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="Start typing..."
+                                                                />
+                                                                <div className="flex flex-wrap gap-2 mt-2">
+                                                                    {member.isSelf && (
+                                                                        <span className="badge-pill bg-cyan-500/30 text-cyan-100 border border-cyan-400/40">You</span>
+                                                                    )}
+                                                                    {member.isManager && (
+                                                                        <span className="badge-pill bg-amber-500/20 text-amber-100 border border-amber-400/40">Manager</span>
+                                                                    )}
+                                                                    {member.positions && member.positions.length > 0 && (
+                                                                        <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
+                                                                            {member.positions.join(', ')}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            <div className="w-32">
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Status</label>
+                                                                <select
+                                                                    value={member.status || 'tentative'}
+                                                                    onChange={(e) => updateFormPath(`coworkers.bartenders.${index}.status`, e.target.value)}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                >
+                                                                    {BARTENDER_STATUS_OPTIONS.map((option) => (
+                                                                        <option key={option.value} value={option.value}>
+                                                                            {option.label}
+                                                                        </option>
+                                                                    ))}
+                                                                </select>
+                                                            </div>
+                                                            <div className="w-40">
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Location</label>
+                                                                <select
+                                                                    value={member.location || ''}
+                                                                    onChange={(e) => updateFormPath(`coworkers.bartenders.${index}.location`, e.target.value)}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                >
+                                                                    {BARTENDER_LOCATION_OPTIONS.map((option) => (
+                                                                        <option key={option.value || 'na'} value={option.value}>
+                                                                            {option.label}
+                                                                        </option>
+                                                                    ))}
+                                                                </select>
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                disabled={member.isSelf}
+                                                                onClick={() => removeBartenderRow(index)}
+                                                                className={`text-xs px-3 py-2 border rounded-xl ${
+                                                                    member.isSelf
+                                                                        ? 'border-slate-700 text-slate-600 cursor-not-allowed'
+                                                                        : 'border-rose-500/40 text-rose-200 hover:bg-rose-500/20'
+                                                                }`}
+                                                            >
+                                                                <i className="fas fa-trash"></i>
+                                                            </button>
+                                                        </div>
+                                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Scheduled Start</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.bartenders.${index}.start`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.bartenders.${index}.start`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.bartenders.${index}.start`, e.target.value, { mode: 'start' })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="5"
+                                                                />
+                                                                {timeErrors[`coworkers.bartenders.${index}.start`] && (
+                                                                    <p className="text-xs text-amber-400">{timeErrors[`coworkers.bartenders.${index}.start`]}</p>
+                                                                )}
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Scheduled End</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.bartenders.${index}.end`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.bartenders.${index}.end`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.bartenders.${index}.end`, e.target.value, {
+                                                                            mode: 'end',
+                                                                            referenceStart: member.start || formData.time?.base?.start,
+                                                                        })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="2"
+                                                                />
+                                                                {timeErrors[`coworkers.bartenders.${index}.end`] && (
+                                                                    <p className="text-xs text-amber-400">{timeErrors[`coworkers.bartenders.${index}.end`]}</p>
+                                                                )}
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Actual Start</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.bartenders.${index}.actualStart`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.bartenders.${index}.actualStart`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.bartenders.${index}.actualStart`, e.target.value, { mode: 'start' })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="5"
+                                                                />
+                                                                {timeErrors[`coworkers.bartenders.${index}.actualStart`] && (
+                                                                    <p className="text-xs text-amber-400">{timeErrors[`coworkers.bartenders.${index}.actualStart`]}</p>
+                                                                )}
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Actual End</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.bartenders.${index}.actualEnd`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.bartenders.${index}.actualEnd`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.bartenders.${index}.actualEnd`, e.target.value, {
+                                                                            mode: 'end',
+                                                                            referenceStart: member.actualStart || member.start || formData.time?.base?.start,
+                                                                        })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="2"
+                                                                />
+                                                                {timeErrors[`coworkers.bartenders.${index}.actualEnd`] && (
+                                                                    <p className="text-xs text-amber-400">{timeErrors[`coworkers.bartenders.${index}.actualEnd`]}</p>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => syncBartenderActualTimes(index)}
+                                                                className="text-[11px] px-3 py-1 border border-slate-700 rounded-lg text-slate-200 hover:border-cyan-500/50"
+                                                            >
+                                                                Copy scheduled times to actual
+                                                            </button>
+                                                        </div>
+                                                        <textarea
+                                                            value={member.notes || ''}
+                                                            onChange={(e) => updateFormPath(`coworkers.bartenders.${index}.notes`, e.target.value)}
+                                                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                            placeholder="Location notes, coverage swaps, call-outs, etc."
+                                                        ></textarea>
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
+
+                                        <div className="space-y-3">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <h4 className="text-sm font-semibold text-slate-200">Servers</h4>
+                                                <span className="text-xs text-slate-400">{(formData.coworkers?.servers || []).length} logged</span>
+                                            </div>
+                                            {(formData.coworkers?.servers || []).length === 0 ? (
+                                                <p className="text-sm text-slate-500">Log the servers you coordinated with, their start times, and cut order for easier recap later.</p>
+                                            ) : (
+                                                (formData.coworkers?.servers || []).map((member, index) => (
+                                                    <div
+                                                        key={`server-${index}`}
+                                                        className="border border-slate-800/60 rounded-2xl bg-slate-900/40 p-4 space-y-3"
+                                                    >
+                                                        <div className="flex flex-wrap items-start gap-3">
+                                                            <div className="flex-1 min-w-[160px]">
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Name</label>
+                                                                <input
+                                                                    type="text"
+                                                                    list="server-name-options"
+                                                                    value={member.name || ''}
+                                                                    onChange={(e) => handleServerNameChange(index, e.target.value)}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="Server name"
+                                                                />
+                                                            </div>
+                                                            <div className="w-32">
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Cut Order</label>
+                                                                <input
+                                                                    type="number"
+                                                                    min="1"
+                                                                    value={member.order || ''}
+                                                                    onChange={(e) => updateFormPath(`coworkers.servers.${index}.order`, e.target.value)}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="#"
+                                                                />
+                                                            </div>
+                                                            <div className="w-36">
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Tip Out</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="decimal"
+                                                                    value={member.tipOut ?? ''}
+                                                                    onChange={(e) => updateFormPath(`coworkers.servers.${index}.tipOut`, e.target.value)}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="Amount"
+                                                                />
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => removeServerRow(index)}
+                                                                className="text-xs px-3 py-2 border border-rose-500/40 text-rose-200 rounded-xl hover:bg-rose-500/20"
+                                                            >
+                                                                <i className="fas fa-trash"></i>
+                                                            </button>
+                                                        </div>
+                                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Scheduled Start</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.servers.${index}.start`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.servers.${index}.start`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.servers.${index}.start`, e.target.value, { mode: 'start' })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="4"
+                                                                />
+                                                                {timeErrors[`coworkers.servers.${index}.start`] && (
+                                                                    <p className="text-xs text-amber-400">{timeErrors[`coworkers.servers.${index}.start`]}</p>
+                                                                )}
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Scheduled End</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.servers.${index}.end`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.servers.${index}.end`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.servers.${index}.end`, e.target.value, {
+                                                                            mode: 'end',
+                                                                            referenceStart: member.start || formData.time?.base?.start,
+                                                                        })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="11"
+                                                                />
+                                                                {timeErrors[`coworkers.servers.${index}.end`] && (
+                                                                    <p className="text-xs text-amber-400">{timeErrors[`coworkers.servers.${index}.end`]}</p>
+                                                                )}
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Actual Start</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.servers.${index}.actualStart`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.servers.${index}.actualStart`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.servers.${index}.actualStart`, e.target.value, { mode: 'start' })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="4"
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Actual End</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.servers.${index}.actualEnd`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.servers.${index}.actualEnd`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.servers.${index}.actualEnd`, e.target.value, {
+                                                                            mode: 'end',
+                                                                            referenceStart: member.actualStart || member.start || formData.time?.base?.start,
+                                                                        })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="11"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                        <textarea
+                                                            value={member.notes || ''}
+                                                            onChange={(e) => updateFormPath(`coworkers.servers.${index}.notes`, e.target.value)}
+                                                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                            placeholder="Cut flow, sections, or anything notable."
+                                                        ></textarea>
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
+
+                                        <div className="space-y-3">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <h4 className="text-sm font-semibold text-slate-200">Support Roles</h4>
+                                                <span className="text-xs text-slate-400">{(formData.coworkers?.support || []).length} logged</span>
+                                            </div>
+                                            {(formData.coworkers?.support || []).length === 0 ? (
+                                                <p className="text-sm text-slate-500">Capture host, busser, door, or expo coverage if it helps your recap.</p>
+                                            ) : (
+                                                (formData.coworkers?.support || []).map((member, index) => (
+                                                    <div
+                                                        key={`support-${index}`}
+                                                        className="border border-slate-800/60 rounded-2xl bg-slate-900/40 p-4 space-y-3"
+                                                    >
+                                                        <div className="flex flex-wrap items-start gap-3">
+                                                            <div className="w-36">
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Role</label>
+                                                                <select
+                                                                    value={member.role || 'Host'}
+                                                                    onChange={(e) => updateFormPath(`coworkers.support.${index}.role`, e.target.value)}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                >
+                                                                    {SUPPORT_ROLE_OPTIONS.map((role) => (
+                                                                        <option key={role} value={role}>
+                                                                            {role}
+                                                                        </option>
+                                                                    ))}
+                                                                </select>
+                                                            </div>
+                                                            <div className="flex-1 min-w-[160px]">
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Name</label>
+                                                                <input
+                                                                    type="text"
+                                                                    list="support-name-options"
+                                                                    value={member.name || ''}
+                                                                    onChange={(e) => handleSupportNameChange(index, e.target.value)}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                    placeholder="Support teammate"
+                                                                />
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => removeSupportRow(index)}
+                                                                className="text-xs px-3 py-2 border border-rose-500/40 text-rose-200 rounded-xl hover:bg-rose-500/20"
+                                                            >
+                                                                <i className="fas fa-trash"></i>
+                                                            </button>
+                                                        </div>
+                                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Start</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.support.${index}.start`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.support.${index}.start`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.support.${index}.start`, e.target.value, { mode: 'start' })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">End</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.support.${index}.end`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.support.${index}.end`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.support.${index}.end`, e.target.value, {
+                                                                            mode: 'end',
+                                                                            referenceStart: member.start || formData.time?.base?.start,
+                                                                        })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Actual Start</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.support.${index}.actualStart`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.support.${index}.actualStart`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.support.${index}.actualStart`, e.target.value, { mode: 'start' })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs uppercase text-slate-500 block mb-1">Actual End</label>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="numeric"
+                                                                    value={getTimeDraftValue(`coworkers.support.${index}.actualEnd`)}
+                                                                    onChange={(e) => handleTimeDraftChange(`coworkers.support.${index}.actualEnd`, e.target.value)}
+                                                                    onBlur={(e) =>
+                                                                        commitTimeValue(`coworkers.support.${index}.actualEnd`, e.target.value, {
+                                                                            mode: 'end',
+                                                                            referenceStart: member.actualStart || member.start || formData.time?.base?.start,
+                                                                        })
+                                                                    }
+                                                                    onFocus={(e) => e.target.select()}
+                                                                    className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                        <textarea
+                                                            value={member.notes || ''}
+                                                            onChange={(e) => updateFormPath(`coworkers.support.${index}.notes`, e.target.value)}
+                                                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                            placeholder="Notes or context for this support role."
+                                                        ></textarea>
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
+
+                                        <div className="space-y-3">
+                                            <h4 className="text-sm font-semibold text-slate-200">Fallbacks &amp; Notes</h4>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500 block mb-1">Default Cut Time (Schedule)</label>
+                                                    <div className="flex gap-2">
+                                                        <input
+                                                            type="text"
+                                                            inputMode="numeric"
+                                                            value={getTimeDraftValue('coworkers.estimates.fallbackEnd')}
+                                                            onChange={(e) => handleTimeDraftChange('coworkers.estimates.fallbackEnd', e.target.value)}
+                                                            onBlur={(e) =>
+                                                                commitTimeValue('coworkers.estimates.fallbackEnd', e.target.value, {
+                                                                    mode: 'end',
+                                                                    referenceStart: formData.time?.base?.start,
+                                                                })
+                                                            }
+                                                            onFocus={(e) => e.target.select()}
+                                                            className="flex-1 px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                            placeholder="2"
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => applyFallbackToBartenders('fallbackEnd')}
+                                                            className="text-xs px-3 py-2 border border-slate-700 text-slate-200 rounded-xl hover:border-cyan-500/40"
+                                                        >
+                                                            Apply
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs uppercase text-slate-500 block mb-1">Default Cut Time (Actual)</label>
+                                                    <div className="flex gap-2">
+                                                        <input
+                                                            type="text"
+                                                            inputMode="numeric"
+                                                            value={getTimeDraftValue('coworkers.estimates.fallbackActualEnd')}
+                                                            onChange={(e) => handleTimeDraftChange('coworkers.estimates.fallbackActualEnd', e.target.value)}
+                                                            onBlur={(e) =>
+                                                                commitTimeValue('coworkers.estimates.fallbackActualEnd', e.target.value, {
+                                                                    mode: 'end',
+                                                                    referenceStart: formData.time?.base?.start,
+                                                                })
+                                                            }
+                                                            onFocus={(e) => e.target.select()}
+                                                            className="flex-1 px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                            placeholder="2"
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => applyFallbackToBartenders('fallbackActualEnd')}
+                                                            className="text-xs px-3 py-2 border border-slate-700 text-slate-200 rounded-xl hover:border-cyan-500/40"
+                                                        >
+                                                            Apply
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <textarea
+                                                value={formData.coworkers?.estimates?.notes || ''}
+                                                onChange={(e) => updateFormPath('coworkers.estimates.notes', e.target.value)}
+                                                className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                                placeholder="General observations, shift swaps, schedule changes, or anything to remember next time."
+                                            ></textarea>
+                                        </div>
+                                    </div>
+
+                                    <datalist id="bartender-name-options">
+                                        {bartenderDirectory.map((member) => (
+                                            <option key={`bartender-option-${member.id}`} value={member.name} />
+                                        ))}
+                                    </datalist>
+                                    <datalist id="server-name-options">
+                                        {serverDirectory.map((member) => (
+                                            <option key={`server-option-${member.id}`} value={member.name} />
+                                        ))}
+                                    </datalist>
+                                    <datalist id="support-name-options">
+                                        {supportDirectory.map((member) => (
+                                            <option key={`support-option-${member.id}`} value={member.name} />
+                                        ))}
+                                    </datalist>
                                 </div>
                             )}
 
