@@ -1403,8 +1403,13 @@
                 tips: null,
                 working: null,
             },
-            wage: { base: 5.0, hours: 0, total: 0 },
-            tips: { _total: 0 },
+            wage: {
+                base: 5.0,
+                hours: '',
+                total: '',
+                clock: { start: '', end: '', manualStart: false, manualEnd: false },
+            },
+            tips: { _total: '' },
             cuts: {},
             coworkers: {
                 bartenders: [],
@@ -1419,10 +1424,11 @@
             parties: {},
             chump: {
                 played: false,
-                amount: { total: 0, bills: 0, coins: 0 },
-                players: [],
+                outcome: null,
                 winner: '',
-                notes: ''
+                notes: '',
+                amount: { total: '', cash: '', coins: '' },
+                players: [],
             },
             overtime: 0,
             consideration: { items: [], net: 0 },
@@ -1896,6 +1902,33 @@
             };
         }
 
+        function sanitizeChumpPlayer(entry = {}) {
+            const probability =
+                entry.joinProbability !== undefined
+                    ? entry.joinProbability
+                    : entry.probability !== undefined
+                        ? entry.probability
+                        : entry.chance !== undefined
+                            ? entry.chance
+                            : 1;
+            let normalizedProbability = String(probability);
+            if (normalizedProbability === '') {
+                normalizedProbability = '1';
+            }
+            const decision =
+                entry.joinDecision !== undefined
+                    ? entry.joinDecision
+                    : entry.outcome && ['win', 'loss'].includes(entry.outcome)
+                        ? entry.outcome
+                        : null;
+            return {
+                name: entry.name || '',
+                joinProbability: normalizedProbability,
+                joinDecision: decision,
+                notes: entry.notes || '',
+            };
+        }
+
         function normalizeCrewData(raw) {
             const base = {
                 bartenders: [],
@@ -1969,6 +2002,44 @@
             if (!shift) return null;
             const cloned = JSON.parse(JSON.stringify(shift));
             cloned.coworkers = normalizeCrewData(cloned.coworkers);
+            delete cloned.coworkerStats;
+
+            cloned.wage = cloned.wage || {};
+            cloned.wage.base = cloned.wage.base !== undefined ? cloned.wage.base : 5.0;
+            cloned.wage.hours = cloned.wage.hours !== undefined ? cloned.wage.hours : '';
+            cloned.wage.total = cloned.wage.total !== undefined ? cloned.wage.total : '';
+            cloned.wage.clock = cloned.wage.clock || { start: '', end: '', manualStart: false, manualEnd: false };
+            cloned.wage.clock.start = cloned.wage.clock.start || '';
+            cloned.wage.clock.end = cloned.wage.clock.end || '';
+            cloned.wage.clock.manualStart = Boolean(cloned.wage.clock.manualStart);
+            cloned.wage.clock.manualEnd = Boolean(cloned.wage.clock.manualEnd);
+
+            if (!cloned.tips) cloned.tips = { _total: '' };
+            if (cloned.tips._total === 0) cloned.tips._total = '';
+
+            if (!cloned.chump) {
+                cloned.chump = JSON.parse(JSON.stringify(DEFAULT_SHIFT_TEMPLATE.chump));
+            } else {
+                cloned.chump.played = Boolean(cloned.chump.played);
+                cloned.chump.outcome = cloned.chump.outcome || null;
+                cloned.chump.winner = cloned.chump.winner || '';
+                cloned.chump.notes = cloned.chump.notes || '';
+                const amount = cloned.chump.amount || {};
+                cloned.chump.amount = {
+                    total: amount.total !== undefined ? String(amount.total) : '',
+                    cash: amount.cash !== undefined ? String(amount.cash) : (amount.bills !== undefined ? String(amount.bills) : ''),
+                    coins: amount.coins !== undefined ? String(amount.coins) : '',
+                };
+                cloned.chump.players = Array.isArray(cloned.chump.players)
+                    ? cloned.chump.players.map((player) => sanitizeChumpPlayer(player))
+                    : [];
+            }
+
+            if (!Array.isArray(cloned.drinking?.items)) {
+                cloned.drinking = cloned.drinking || {};
+                cloned.drinking.items = [];
+            }
+
             return cloned;
         }
 
