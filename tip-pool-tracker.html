@@ -138,6 +138,54 @@
                 this.gisLoaded = false;
                 this.tokenClient = null;
                 this.accessToken = null;
+                this.tokenExpiry = null;
+                this.onToken = null;
+            }
+
+            setTokenListener(listener) {
+                this.onToken = typeof listener === 'function' ? listener : null;
+            }
+
+            handleTokenResponse(response) {
+                if (!response || response.error) {
+                    console.warn('Token request was not successful', response?.error);
+                    return false;
+                }
+                if (response.access_token) {
+                    this.accessToken = response.access_token;
+                    if (typeof gapi !== 'undefined' && gapi?.client?.setToken) {
+                        gapi.client.setToken({ access_token: response.access_token });
+                    }
+                    const expiresIn = Number(response.expires_in || response.expiresIn);
+                    this.tokenExpiry = Number.isFinite(expiresIn) ? Date.now() + expiresIn * 1000 : null;
+                    if (this.onToken) {
+                        this.onToken({
+                            access_token: response.access_token,
+                            expires_in: response.expires_in,
+                            expires_at: this.tokenExpiry,
+                            scope: response.scope,
+                        });
+                    }
+                    return true;
+                }
+                return false;
+            }
+
+            applySavedToken(session) {
+                if (!session || !session.accessToken) return false;
+                if (typeof gapi === 'undefined' || !gapi?.client?.setToken) return false;
+                gapi.client.setToken({ access_token: session.accessToken });
+                this.accessToken = session.accessToken;
+                this.tokenExpiry = session.expiresAt || null;
+                return true;
+            }
+
+            clearToken() {
+                if (typeof gapi !== 'undefined' && gapi?.client?.setToken) {
+                    gapi.client.setToken(null);
+                }
+                this.accessToken = null;
+                this.tokenExpiry = null;
             }
 
             async initialize(clientId, apiKey) {
@@ -154,6 +202,8 @@
                                 discoveryDocs: DISCOVERY_DOCS,
                             });
                             this.gapiLoaded = true;
+                            this.clientId = clientId;
+                            this.apiKey = apiKey;
                             
                             // Initialize GIS
                             if (typeof google !== 'undefined' && google.accounts) {
@@ -161,9 +211,7 @@
                                     client_id: clientId,
                                     scope: SCOPES,
                                     callback: (response) => {
-                                        if (response.access_token) {
-                                            this.accessToken = response.access_token;
-                                        }
+                                        this.handleTokenResponse(response);
                                     },
                                 });
                                 this.gisLoaded = true;
@@ -177,18 +225,17 @@
                 });
             }
 
-            requestAccessToken() {
+            requestAccessToken(options = {}) {
                 return new Promise((resolve) => {
                     if (this.tokenClient) {
                         this.tokenClient.callback = (response) => {
-                            if (response.access_token) {
-                                this.accessToken = response.access_token;
-                                resolve(true);
-                            } else {
-                                resolve(false);
-                            }
+                            resolve(this.handleTokenResponse(response));
                         };
-                        this.tokenClient.requestAccessToken();
+                        const requestOptions = {};
+                        if (options.prompt !== undefined) {
+                            requestOptions.prompt = options.prompt;
+                        }
+                        this.tokenClient.requestAccessToken(requestOptions);
                     } else {
                         resolve(false);
                     }
@@ -268,6 +315,51 @@
 
         const SHIFT_CACHE_KEY = 'tipPool.shiftCache.v2';
         const SHIFT_QUEUE_KEY = 'tipPool.shiftQueue.v1';
+        const AUTH_TOKEN_KEY = 'tipPool.authToken.v1';
+        const CONFIG_STORAGE_KEY = 'tipPoolConfig';
+        const REMOTE_CONFIG_PATH = 'config.json';
+
+        function loadStoredAuthToken() {
+            try {
+                const raw = localStorage.getItem(AUTH_TOKEN_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (!parsed || !parsed.accessToken) return null;
+                if (parsed.expiresAt) {
+                    parsed.expiresAt = Number(parsed.expiresAt);
+                }
+                return parsed;
+            } catch (error) {
+                console.warn('Failed to parse stored auth token', error);
+                return null;
+            }
+        }
+
+        function storeAuthToken(session) {
+            try {
+                if (!session) {
+                    localStorage.removeItem(AUTH_TOKEN_KEY);
+                    return;
+                }
+                const payload = {
+                    accessToken: session.accessToken,
+                    expiresAt: session.expiresAt,
+                    scope: session.scope,
+                    receivedAt: Date.now(),
+                };
+                localStorage.setItem(AUTH_TOKEN_KEY, JSON.stringify(payload));
+            } catch (error) {
+                console.warn('Failed to persist auth token', error);
+            }
+        }
+
+        function clearStoredAuthToken() {
+            try {
+                localStorage.removeItem(AUTH_TOKEN_KEY);
+            } catch (error) {
+                console.warn('Failed to clear auth token', error);
+            }
+        }
 
         function loadCachedShifts() {
             try {
@@ -325,7 +417,32 @@
         }
 
         function deserializeShiftRow(rowIndex, rowValues) {
-            const [id, date, type, hoursStr, totalStr, json] = rowValues;
+            if (!rowValues || rowValues.length === 0) return null;
+            const normalized = Array.isArray(rowValues) ? rowValues : [];
+
+            if (normalized.length <= 2) {
+                const [id, rawJson] = normalized;
+                if (!id && !rawJson) return null;
+                let legacyData = null;
+                if (rawJson) {
+                    try {
+                        legacyData = JSON.parse(rawJson);
+                    } catch (error) {
+                        console.warn('Failed to parse legacy shift JSON', error, rowValues);
+                    }
+                }
+                legacyData = normalizeShiftPayload(legacyData || { id });
+                if (!legacyData) return null;
+                if (!legacyData.id) legacyData.id = id || `shift_${Date.now()}`;
+                return {
+                    rowIndex,
+                    id: legacyData.id,
+                    data: legacyData,
+                };
+            }
+
+            const [id, date, type, hoursStr, totalStr, json] = normalized;
+            if (!id && !json) return null;
             let data = null;
             try {
                 data = json ? JSON.parse(json) : null;
@@ -378,14 +495,16 @@
         function App() {
             const [view, setView] = useState('list'); // list, create, edit, view
             const [shifts, setShifts] = useState(() => loadCachedShifts() || []);
-              const [currentShift, setCurrentShift] = useState(null);
-              const [isAuthenticated, setIsAuthenticated] = useState(false);
-              const [config, setConfig] = useState({
-                  clientId: '',
-                  apiKey: '',
-                  spreadsheetId: '',
-                  sheetName: 'Shifts',
-              });
+            const [currentShift, setCurrentShift] = useState(null);
+            const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [authSession, setAuthSession] = useState(() => loadStoredAuthToken());
+            const authSessionRef = useRef(authSession);
+            const [config, setConfig] = useState({
+                clientId: '',
+                apiKey: '',
+                spreadsheetId: '',
+                sheetName: 'Shifts',
+            });
             const [showConfig, setShowConfig] = useState(true);
               const [loading, setLoading] = useState(false);
               const [error, setError] = useState(null);
@@ -395,7 +514,67 @@
               });
             const [coworkerDirectory, setCoworkerDirectory] = useState([]);
 
-              useEffect(() => {
+            useEffect(() => {
+                authSessionRef.current = authSession;
+            }, [authSession]);
+
+            const handleTokenEvent = useCallback(
+                (tokenInfo) => {
+                    if (!tokenInfo || !tokenInfo.access_token) return;
+                    const expiresIn = Number(tokenInfo.expires_in || tokenInfo.expiresIn || 3600);
+                    const computedExpiry = Number.isFinite(expiresIn)
+                        ? Date.now() + expiresIn * 1000
+                        : Date.now() + 3600 * 1000;
+                    const expiresAt = tokenInfo.expires_at || computedExpiry;
+                    const session = {
+                        accessToken: tokenInfo.access_token,
+                        expiresAt,
+                        scope: tokenInfo.scope || SCOPES,
+                    };
+                    storeAuthToken(session);
+                    setAuthSession(session);
+                    setIsAuthenticated(true);
+                },
+                [setAuthSession, setIsAuthenticated]
+            );
+
+            useEffect(() => {
+                sheetsAPI.setTokenListener(handleTokenEvent);
+                return () => sheetsAPI.setTokenListener(null);
+            }, [handleTokenEvent]);
+
+            const refreshToken = useCallback(
+                async (mode = 'silent') => {
+                    if (!sheetsAPI || !sheetsAPI.tokenClient) {
+                        return false;
+                    }
+                    if (mode === 'silent' && !isOnline()) {
+                        return false;
+                    }
+                    try {
+                        const success = await sheetsAPI.requestAccessToken({
+                            prompt: mode === 'consent' ? 'consent' : '',
+                        });
+                        if (!success && mode === 'consent') {
+                            clearStoredAuthToken();
+                            setAuthSession(null);
+                            setIsAuthenticated(false);
+                        }
+                        return success;
+                    } catch (refreshError) {
+                        console.warn('Token refresh failed', refreshError);
+                        if (mode === 'consent') {
+                            clearStoredAuthToken();
+                            setAuthSession(null);
+                            setIsAuthenticated(false);
+                        }
+                        return false;
+                    }
+                },
+                [setAuthSession, setIsAuthenticated]
+            );
+
+          useEffect(() => {
                   let cancelled = false;
 
                   const bootServer = async () => {
@@ -435,9 +614,43 @@
                   };
               }, []);
 
+            const initializeGoogleAPI = useCallback(
+                async (cfg) => {
+                    if (!cfg || !cfg.clientId || !cfg.apiKey) return;
+                    try {
+                        await sheetsAPI.initialize(cfg.clientId, cfg.apiKey);
+                        console.log('Google API initialized');
+
+                        const session = authSessionRef.current;
+                        if (session?.accessToken) {
+                            const stillValid =
+                                !session.expiresAt || session.expiresAt > Date.now() + 30 * 1000;
+                            if (stillValid) {
+                                sheetsAPI.applySavedToken(session);
+                                setIsAuthenticated(true);
+                            } else if (isOnline()) {
+                                await refreshToken('silent');
+                            }
+                        } else if (typeof gapi !== 'undefined' && gapi?.client?.getToken) {
+                            const token = gapi.client.getToken();
+                            if (token?.access_token) {
+                                handleTokenEvent({
+                                    access_token: token.access_token,
+                                    expires_in: token.expires_in,
+                                    scope: token.scope,
+                                });
+                            }
+                        }
+                    } catch (error) {
+                        setError('Failed to initialize Google API: ' + error.message);
+                    }
+                },
+                [refreshToken, handleTokenEvent]
+            );
+
             // Load configuration from localStorage
             useEffect(() => {
-                const savedConfig = localStorage.getItem('tipPoolConfig');
+                const savedConfig = localStorage.getItem(CONFIG_STORAGE_KEY);
                 if (savedConfig) {
                     const parsed = JSON.parse(savedConfig);
                     setConfig(parsed);
@@ -446,45 +659,98 @@
                         initializeGoogleAPI(parsed);
                     }
                 }
-            }, []);
-
-            const initializeGoogleAPI = async (cfg) => {
-                try {
-                    await sheetsAPI.initialize(cfg.clientId, cfg.apiKey);
-                    console.log('Google API initialized');
-                    if (typeof gapi !== 'undefined' && gapi?.client?.getToken) {
-                        const token = gapi.client.getToken();
-                        if (token) {
-                            setIsAuthenticated(true);
-                        }
-                    }
-                } catch (error) {
-                    setError('Failed to initialize Google API: ' + error.message);
-                }
-            };
+            }, [initializeGoogleAPI]);
 
             const handleAuthenticate = async () => {
                 setLoading(true);
                 setError(null);
                 try {
-                    const success = await sheetsAPI.requestAccessToken();
-                    if (success) {
-                        setIsAuthenticated(true);
-                    } else {
-                        setError('Authentication failed');
+                    const success = await refreshToken('consent');
+                    if (!success) {
+                        setError('Authentication failed or was cancelled.');
                     }
                 } catch (error) {
-                    setError('Authentication error: ' + error.message);
+                    setError('Authentication error: ' + (error?.message || error));
                 } finally {
                     setLoading(false);
                 }
             };
 
             const saveConfig = () => {
-                localStorage.setItem('tipPoolConfig', JSON.stringify(config));
+                localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
                 setShowConfig(false);
                 initializeGoogleAPI(config);
             };
+
+            // Attempt to load config from bundled config.json on first run
+            useEffect(() => {
+                if (localStorage.getItem(CONFIG_STORAGE_KEY)) return;
+                if (typeof fetch === 'undefined') return;
+
+                let cancelled = false;
+
+                const fetchRemoteConfig = async () => {
+                    try {
+                        const response = await fetch(REMOTE_CONFIG_PATH, { cache: 'no-store' });
+                        if (!response.ok) return;
+                        const remote = await response.json();
+                        if (cancelled || !remote) return;
+
+                        let nextConfig = null;
+                        setConfig((prev) => {
+                            nextConfig = { ...prev, ...remote };
+                            return nextConfig;
+                        });
+
+                        if (nextConfig) {
+                            localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(nextConfig));
+                        }
+
+                        if (!cancelled && remote.clientId && remote.apiKey && nextConfig) {
+                            setShowConfig(false);
+                            initializeGoogleAPI(nextConfig);
+                        }
+                    } catch (error) {
+                        console.warn('Optional config.json not loaded', error);
+                    }
+                };
+
+                fetchRemoteConfig();
+
+                return () => {
+                    cancelled = true;
+                };
+            }, [initializeGoogleAPI]);
+
+            useEffect(() => {
+                if (!authSession?.accessToken) {
+                    sheetsAPI.clearToken();
+                    clearStoredAuthToken();
+                    if (isAuthenticated) {
+                        setIsAuthenticated(false);
+                    }
+                    return;
+                }
+            }, [authSession, isAuthenticated]);
+
+            useEffect(() => {
+                if (!authSession?.accessToken) return;
+                if (authSession.expiresAt && authSession.expiresAt <= Date.now()) {
+                    refreshToken('silent');
+                    return;
+                }
+                if (!authSession.expiresAt) return;
+                const msUntilExpiry = authSession.expiresAt - Date.now();
+                if (msUntilExpiry <= 0) {
+                    refreshToken('silent');
+                    return;
+                }
+                const refreshDelay = Math.max(msUntilExpiry - 15 * 1000, 5 * 1000);
+                const timer = setTimeout(() => {
+                    refreshToken('silent');
+                }, refreshDelay);
+                return () => clearTimeout(timer);
+            }, [authSession, refreshToken]);
 
             const loadShifts = useCallback(async () => {
                 if (!config.spreadsheetId || !isAuthenticated) return;
@@ -646,12 +912,13 @@
             useEffect(() => {
                 const handleOnline = () => {
                     syncPendingShifts();
+                    refreshToken('silent');
                 };
                 window.addEventListener('online', handleOnline);
                 return () => {
                     window.removeEventListener('online', handleOnline);
                 };
-            }, [syncPendingShifts]);
+            }, [syncPendingShifts, refreshToken]);
 
             const saveShift = async (shiftData) => {
                 const normalized = normalizeShiftPayload(shiftData) || shiftData;
