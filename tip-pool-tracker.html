@@ -139,6 +139,13 @@
         });
         const CREW_POSITION_OPTIONS = ['Bartender', 'Server', 'Expo', 'Busser', 'Hostess', 'Door'];
         const COWORKER_SHEET_NAME = 'Coworkers';
+        const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.') => {
+            if (!error) return fallback;
+            if (typeof error === 'string') return error;
+            if (error?.result?.error?.message) return error.result.error.message;
+            if (error?.message) return error.message;
+            return fallback;
+        };
 
         // Google Sheets Helper Functions
         class GoogleSheetsAPI {
@@ -522,10 +529,15 @@
                   message: `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
               });
             const [coworkerDirectory, setCoworkerDirectory] = useState([]);
+            const coworkerSheetMetaRef = useRef({ ensured: false, sheetId: null });
 
             useEffect(() => {
                 authSessionRef.current = authSession;
             }, [authSession]);
+
+            useEffect(() => {
+                coworkerSheetMetaRef.current = { ensured: false, sheetId: null };
+            }, [config.spreadsheetId, isAuthenticated]);
 
             const handleTokenEvent = useCallback(
                 (tokenInfo) => {
@@ -789,9 +801,72 @@
                 }
             }, [config.sheetName, config.spreadsheetId, isAuthenticated]);
 
+            const ensureCoworkerSheetExists = useCallback(async () => {
+                if (!config.spreadsheetId || !isAuthenticated) return null;
+                if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                    throw new Error('Google Sheets client is not ready yet. Try reconnecting Google Sheets.');
+                }
+
+                const cache = coworkerSheetMetaRef.current || { ensured: false, sheetId: null };
+                if (cache.ensured) {
+                    return cache.sheetId ?? null;
+                }
+
+                try {
+                    const spreadsheet = await gapi.client.sheets.spreadsheets.get({
+                        spreadsheetId: config.spreadsheetId,
+                        includeGridData: false,
+                    });
+                    const existing = spreadsheet.result?.sheets?.find(
+                        (sheet) => sheet.properties?.title === COWORKER_SHEET_NAME
+                    );
+                    if (existing) {
+                        const sheetId = existing.properties?.sheetId ?? null;
+                        coworkerSheetMetaRef.current = { ensured: true, sheetId };
+                        return sheetId;
+                    }
+                } catch (error) {
+                    throw new Error(getSheetsErrorMessage(error, 'Unable to inspect spreadsheet for coworker tab.'));
+                }
+
+                try {
+                    const addResponse = await gapi.client.sheets.spreadsheets.batchUpdate({
+                        spreadsheetId: config.spreadsheetId,
+                        resource: {
+                            requests: [
+                                {
+                                    addSheet: {
+                                        properties: {
+                                            title: COWORKER_SHEET_NAME,
+                                            tabColor: { red: 0.129, green: 0.231, blue: 0.541 },
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    });
+                    const newSheetId =
+                        addResponse.result?.replies?.[0]?.addSheet?.properties?.sheetId ?? null;
+                    await gapi.client.sheets.spreadsheets.values.update({
+                        spreadsheetId: config.spreadsheetId,
+                        range: `${COWORKER_SHEET_NAME}!A1:F1`,
+                        valueInputOption: 'RAW',
+                        resource: {
+                            values: [['ID', 'Name', 'First', 'Last', 'Positions', 'Manager']],
+                        },
+                    });
+                    coworkerSheetMetaRef.current = { ensured: true, sheetId: newSheetId };
+                    return newSheetId;
+                } catch (error) {
+                    coworkerSheetMetaRef.current = { ensured: false, sheetId: null };
+                    throw new Error(getSheetsErrorMessage(error, 'Unable to create Coworkers sheet.'));
+                }
+            }, [config.spreadsheetId, isAuthenticated]);
+
             const loadCoworkerDirectory = useCallback(async () => {
                 if (!config.spreadsheetId || !isAuthenticated) return;
                 try {
+                    await ensureCoworkerSheetExists();
                     const rows = await sheetsAPI.readData(config.spreadsheetId, `${COWORKER_SHEET_NAME}!A2:F`);
                     const directory = (rows || [])
                         .map((row, index) => {
@@ -831,11 +906,15 @@
                         })
                         .filter(Boolean);
                     setCoworkerDirectory(directory);
+                    setError((prev) =>
+                        prev && prev.toLowerCase().includes('coworker') ? null : prev
+                    );
                 } catch (directoryError) {
                     console.warn('Failed to load coworker directory', directoryError);
                     setCoworkerDirectory([]);
+                    setError(getSheetsErrorMessage(directoryError, 'Failed to load coworker directory.'));
                 }
-            }, [config.spreadsheetId, isAuthenticated]);
+            }, [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated]);
 
             const coworkerRowRange = (rowIndex) => `${COWORKER_SHEET_NAME}!A${rowIndex}:F${rowIndex}`;
 
@@ -866,6 +945,7 @@
                     if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
                         throw new Error('Google Sheets client is not ready yet.');
                     }
+                    await ensureCoworkerSheetExists();
 
                     const payload = formatCoworkerForSheet(draft);
                     if (!payload) {
@@ -884,31 +964,35 @@
                         payload.isManager ? 'TRUE' : '',
                     ];
 
-                    if (payload.rowIndex) {
-                        await gapi.client.sheets.spreadsheets.values.update({
-                            spreadsheetId: config.spreadsheetId,
-                            range: coworkerRowRange(payload.rowIndex),
-                            valueInputOption: 'RAW',
-                            resource: {
-                                values: [rowValues],
-                            },
-                        });
-                    } else {
-                        await gapi.client.sheets.spreadsheets.values.append({
-                            spreadsheetId: config.spreadsheetId,
-                            range: `${COWORKER_SHEET_NAME}!A:F`,
-                            valueInputOption: 'RAW',
-                            insertDataOption: 'INSERT_ROWS',
-                            resource: {
-                                values: [rowValues],
-                            },
-                        });
+                    try {
+                        if (payload.rowIndex) {
+                            await gapi.client.sheets.spreadsheets.values.update({
+                                spreadsheetId: config.spreadsheetId,
+                                range: coworkerRowRange(payload.rowIndex),
+                                valueInputOption: 'RAW',
+                                resource: {
+                                    values: [rowValues],
+                                },
+                            });
+                        } else {
+                            await gapi.client.sheets.spreadsheets.values.append({
+                                spreadsheetId: config.spreadsheetId,
+                                range: `${COWORKER_SHEET_NAME}!A:F`,
+                                valueInputOption: 'RAW',
+                                insertDataOption: 'INSERT_ROWS',
+                                resource: {
+                                    values: [rowValues],
+                                },
+                            });
+                        }
+                    } catch (error) {
+                        throw new Error(getSheetsErrorMessage(error, 'Unable to save coworker.'));
                     }
 
                     await loadCoworkerDirectory();
                     return payload;
                 },
-                [config.spreadsheetId, isAuthenticated, loadCoworkerDirectory]
+                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
             );
 
             const deleteCoworkerRecord = useCallback(
@@ -923,18 +1007,24 @@
                         throw new Error('Missing row information for coworker.');
                     }
 
-                    await gapi.client.sheets.spreadsheets.values.update({
-                        spreadsheetId: config.spreadsheetId,
-                        range: coworkerRowRange(record.rowIndex),
-                        valueInputOption: 'RAW',
-                        resource: {
-                            values: [['', '', '', '', '', '']],
-                        },
-                    });
+                    await ensureCoworkerSheetExists();
+
+                    try {
+                        await gapi.client.sheets.spreadsheets.values.update({
+                            spreadsheetId: config.spreadsheetId,
+                            range: coworkerRowRange(record.rowIndex),
+                            valueInputOption: 'RAW',
+                            resource: {
+                                values: [['', '', '', '', '', '']],
+                            },
+                        });
+                    } catch (error) {
+                        throw new Error(getSheetsErrorMessage(error, 'Unable to delete coworker.'));
+                    }
 
                     await loadCoworkerDirectory();
                 },
-                [config.spreadsheetId, isAuthenticated, loadCoworkerDirectory]
+                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
             );
 
             const syncingRef = useRef(false);
@@ -1794,7 +1884,7 @@
                                 </span>
                             </div>
                             <p className="text-sm text-slate-400 mt-1">
-                                Manage the roster synced to the <code>Coworkers</code> sheet.
+                                Manage the roster synced to the <code>Coworkers</code> sheet. This tab will be created automatically if it is missing.
                             </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
