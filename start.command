@@ -38,7 +38,82 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sleep 2
+probe_url() {
+  local url="$1"
+
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 - "$url" <<'PY'
+import sys
+from urllib.request import urlopen
+from urllib.error import URLError, HTTPError
+
+url = sys.argv[1]
+try:
+    with urlopen(url, timeout=1):
+        pass
+except (URLError, HTTPError):
+    sys.exit(1)
+PY
+    then
+      return 0
+    fi
+    return 1
+  fi
+
+  return 1
+}
+
+wait_for_server() {
+  local max_attempts="${1:-40}"
+  local delay="${2:-0.5}"
+  local attempt=0
+  local url="http://127.0.0.1:${PORT}/tip-pool-tracker.html"
+
+  while (( attempt < max_attempts )); do
+    if ! ps -p "$SERVER_PID" >/dev/null 2>&1; then
+      return 2
+    fi
+
+    if probe_url "$url"; then
+      return 0
+    fi
+
+    attempt=$((attempt + 1))
+    sleep "$delay"
+  done
+
+  return 1
+}
+
+echo "Waiting for server to become ready..."
+if wait_for_server 40 0.5; then
+  echo "Server is ready."
+else
+  status=$?
+  echo "Failed to confirm that the server is ready."
+  if [ "$status" -eq 2 ]; then
+    echo "The server process exited unexpectedly. Check the log below:"
+  else
+    echo "The server did not respond within the expected time. Check the log below:"
+  fi
+
+  if [ -f "$LOG_FILE" ]; then
+    echo "----- Last 40 log lines -----"
+    tail -n 40 "$LOG_FILE" || true
+    echo "----- End log -----"
+  else
+    echo "Log file $LOG_FILE not found."
+  fi
+  exit 1
+fi
+
 APP_URL="http://localhost:${PORT}/tip-pool-tracker.html"
 
 echo "Opening $APP_URL"
