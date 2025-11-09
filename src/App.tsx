@@ -16,6 +16,25 @@ import {
   isOnline,
 } from './lib/storage';
 
+const VIEW_MODES = Object.freeze({
+  DASHBOARD: 'dashboard',
+  SHIFT_CREATE: 'shift-create',
+  SHIFT_EDIT: 'shift-edit',
+  SHIFT_VIEW: 'shift-view',
+  COWORKERS: 'coworkers',
+});
+
+const CREW_POSITION_OPTIONS = ['Bartender', 'Server', 'Expo', 'Busser', 'Hostess', 'Door'];
+const COWORKER_SHEET_NAME = 'Coworkers';
+
+const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.') => {
+  if (!error) return fallback;
+  if (typeof error === 'string') return error;
+  if (error?.result?.error?.message) return error.result.error.message;
+  if (error?.message) return error.message;
+  return fallback;
+};
+
 function serializeShiftForRow(shift) {
             const totalEarnings = parseFloat(shift?.earnings?.total ?? 0) || 0;
             const hours = parseFloat(shift?.summary?.hours ?? 0) || 0;
@@ -102,12 +121,13 @@ function serializeShiftForRow(shift) {
 
         // Main App Component
         function App() {
-            const [view, setView] = useState('list'); // list, create, edit, view
+            const [view, setView] = useState(VIEW_MODES.DASHBOARD);
             const [shifts, setShifts] = useState(() => loadCachedShifts() || []);
             const [currentShift, setCurrentShift] = useState(null);
             const [isAuthenticated, setIsAuthenticated] = useState(false);
             const [authSession, setAuthSession] = useState(() => loadStoredAuthToken());
             const authSessionRef = useRef(authSession);
+            const coworkerSheetMetaRef = useRef({ ensured: false, sheetId: null });
             const [config, setConfig] = useState({
                 clientId: '',
                 apiKey: '',
@@ -122,6 +142,7 @@ function serializeShiftForRow(shift) {
                   message: `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
               });
             const [coworkerDirectory, setCoworkerDirectory] = useState([]);
+            const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
             useEffect(() => {
                 authSessionRef.current = authSession;
@@ -389,13 +410,84 @@ function serializeShiftForRow(shift) {
                 }
             }, [config.sheetName, config.spreadsheetId, isAuthenticated]);
 
+            const ensureCoworkerSheetExists = useCallback(async () => {
+                if (!config.spreadsheetId || !isAuthenticated) return null;
+                if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                    throw new Error('Google Sheets client is not ready yet. Try reconnecting Google Sheets.');
+                }
+
+                const cache = coworkerSheetMetaRef.current || { ensured: false, sheetId: null };
+                if (cache.ensured) {
+                    return cache.sheetId ?? null;
+                }
+
+                try {
+                    const spreadsheet = await gapi.client.sheets.spreadsheets.get({
+                        spreadsheetId: config.spreadsheetId,
+                        includeGridData: false,
+                    });
+                    const existing = spreadsheet.result?.sheets?.find(
+                        (sheet) => sheet.properties?.title === COWORKER_SHEET_NAME
+                    );
+                    if (existing) {
+                        const sheetId = existing.properties?.sheetId ?? null;
+                        coworkerSheetMetaRef.current = { ensured: true, sheetId };
+                        return sheetId;
+                    }
+                } catch (error) {
+                    throw new Error(getSheetsErrorMessage(error, 'Unable to inspect spreadsheet for coworker tab.'));
+                }
+
+                try {
+                    const addResponse = await gapi.client.sheets.spreadsheets.batchUpdate({
+                        spreadsheetId: config.spreadsheetId,
+                        resource: {
+                            requests: [
+                                {
+                                    addSheet: {
+                                        properties: {
+                                            title: COWORKER_SHEET_NAME,
+                                            tabColor: { red: 0.129, green: 0.231, blue: 0.541 },
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    });
+                    const newSheetId =
+                        addResponse.result?.replies?.[0]?.addSheet?.properties?.sheetId ?? null;
+                    await gapi.client.sheets.spreadsheets.values.update({
+                        spreadsheetId: config.spreadsheetId,
+                        range: `${COWORKER_SHEET_NAME}!A1:F1`,
+                        valueInputOption: 'RAW',
+                        resource: {
+                            values: [['ID', 'Name', 'First', 'Last', 'Positions', 'Manager']],
+                        },
+                    });
+                    coworkerSheetMetaRef.current = { ensured: true, sheetId: newSheetId };
+                    return newSheetId;
+                } catch (error) {
+                    coworkerSheetMetaRef.current = { ensured: false, sheetId: null };
+                    throw new Error(getSheetsErrorMessage(error, 'Unable to create Coworkers sheet.'));
+                }
+            }, [config.spreadsheetId, isAuthenticated]);
+
             const loadCoworkerDirectory = useCallback(async () => {
                 if (!config.spreadsheetId || !isAuthenticated) return;
                 try {
-                    const rows = await sheetsAPI.readData(config.spreadsheetId, 'Coworkers!A2:F');
+                    await ensureCoworkerSheetExists();
+                    const rows = await sheetsAPI.readData(config.spreadsheetId, `${COWORKER_SHEET_NAME}!A2:F`);
                     const directory = (rows || [])
                         .map((row, index) => {
-                            const [trappeId, name, firstName, lastName, positionsRaw, managerRaw] = row;
+                            const [
+                                trappeId = '',
+                                name = '',
+                                firstName = '',
+                                lastName = '',
+                                positionsRaw = '',
+                                managerRaw = '',
+                            ] = row || [];
+                            const rowIndex = index + 2;
                             const fallbackName = [firstName, lastName].filter(Boolean).join(' ');
                             const normalizedName = (name || fallbackName || '').trim();
                             if (!normalizedName) return null;
@@ -410,6 +502,7 @@ function serializeShiftForRow(shift) {
                                 normalizedName.toLowerCase() === 'ian' ||
                                 (firstName || '').trim().toLowerCase() === 'ian';
                             return {
+                                rowIndex,
                                 id: trappeId || `coworker_${index}`,
                                 name: normalizedName,
                                 firstName: firstName || '',
@@ -422,11 +515,126 @@ function serializeShiftForRow(shift) {
                         })
                         .filter(Boolean);
                     setCoworkerDirectory(directory);
+                    setError((prev) =>
+                        prev && prev.toLowerCase().includes('coworker') ? null : prev
+                    );
                 } catch (directoryError) {
                     console.warn('Failed to load coworker directory', directoryError);
                     setCoworkerDirectory([]);
+                    setError(getSheetsErrorMessage(directoryError, 'Failed to load coworker directory.'));
                 }
-            }, [config.spreadsheetId, isAuthenticated]);
+            }, [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated]);
+
+            const coworkerRowRange = (rowIndex) => `${COWORKER_SHEET_NAME}!A${rowIndex}:F${rowIndex}`;
+
+            const formatCoworkerForSheet = (draft) => {
+                if (!draft) return null;
+                const firstName = (draft.firstName || '').trim();
+                const lastName = (draft.lastName || '').trim();
+                const displayName = (draft.name || `${firstName} ${lastName}` || '').trim();
+                const positions = Array.isArray(draft.positions)
+                    ? draft.positions.filter(Boolean)
+                    : [];
+                return {
+                    rowIndex: draft.rowIndex || null,
+                    id: (draft.id || '').trim(),
+                    name: displayName,
+                    firstName,
+                    lastName,
+                    positions,
+                    isManager: !!draft.isManager,
+                };
+            };
+
+            const upsertCoworkerRecord = useCallback(
+                async (draft) => {
+                    if (!config.spreadsheetId || !isAuthenticated) {
+                        throw new Error('Connect Google Sheets to manage coworkers.');
+                    }
+                    if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                        throw new Error('Google Sheets client is not ready yet.');
+                    }
+                    await ensureCoworkerSheetExists();
+
+                    const payload = formatCoworkerForSheet(draft);
+                    if (!payload) {
+                        throw new Error('Invalid coworker details.');
+                    }
+                    if (!payload.name) {
+                        throw new Error('Name is required.');
+                    }
+                    const positionsValue = payload.positions.join(', ');
+                    const rowValues = [
+                        payload.id,
+                        payload.name,
+                        payload.firstName,
+                        payload.lastName,
+                        positionsValue,
+                        payload.isManager ? 'TRUE' : '',
+                    ];
+
+                    try {
+                        if (payload.rowIndex) {
+                            await gapi.client.sheets.spreadsheets.values.update({
+                                spreadsheetId: config.spreadsheetId,
+                                range: coworkerRowRange(payload.rowIndex),
+                                valueInputOption: 'RAW',
+                                resource: {
+                                    values: [rowValues],
+                                },
+                            });
+                        } else {
+                            await gapi.client.sheets.spreadsheets.values.append({
+                                spreadsheetId: config.spreadsheetId,
+                                range: `${COWORKER_SHEET_NAME}!A:F`,
+                                valueInputOption: 'RAW',
+                                insertDataOption: 'INSERT_ROWS',
+                                resource: {
+                                    values: [rowValues],
+                                },
+                            });
+                        }
+                    } catch (error) {
+                        throw new Error(getSheetsErrorMessage(error, 'Unable to save coworker.'));
+                    }
+
+                    await loadCoworkerDirectory();
+                    return payload;
+                },
+                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
+            );
+
+            const deleteCoworkerRecord = useCallback(
+                async (record) => {
+                    if (!config.spreadsheetId || !isAuthenticated) {
+                        throw new Error('Connect Google Sheets to manage coworkers.');
+                    }
+                    if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                        throw new Error('Google Sheets client is not ready yet.');
+                    }
+                    if (!record?.rowIndex) {
+                        throw new Error('Missing row information for coworker.');
+                    }
+
+                    await ensureCoworkerSheetExists();
+
+                    try {
+                        await gapi.client.sheets.spreadsheets.values.update({
+                            spreadsheetId: config.spreadsheetId,
+                            range: coworkerRowRange(record.rowIndex),
+                            valueInputOption: 'RAW',
+                            resource: {
+                                values: [['', '', '', '', '', '']],
+                            },
+                        });
+                    } catch (error) {
+                        throw new Error(getSheetsErrorMessage(error, 'Unable to delete coworker.'));
+                    }
+
+                    await loadCoworkerDirectory();
+                },
+                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
+            );
 
             const syncingRef = useRef(false);
 
@@ -549,7 +757,7 @@ function serializeShiftForRow(shift) {
                 });
                 setShifts(nextRecords);
                 storeCachedShifts(nextRecords);
-                setView('list');
+                setView(VIEW_MODES.DASHBOARD);
 
                 if (!config.spreadsheetId || !isAuthenticated) return;
 
@@ -595,7 +803,7 @@ function serializeShiftForRow(shift) {
                     const normalizedSeed = normalizeShiftPayload(seed) || seed;
                     const draft = deepMergeShift(DEFAULT_SHIFT_TEMPLATE, normalizedSeed);
                     setCurrentShift(draft);
-                    setView('create');
+                    setView(VIEW_MODES.SHIFT_CREATE);
                 },
                 []
             );
@@ -613,17 +821,55 @@ function serializeShiftForRow(shift) {
 
             const editShift = (shift) => {
                 setCurrentShift(shift.data);
-                setView('edit');
+                setView(VIEW_MODES.SHIFT_EDIT);
             };
 
             const viewShift = (shift) => {
                 setCurrentShift(shift.data);
-                setView('view');
+                setView(VIEW_MODES.SHIFT_VIEW);
+            };
+
+            const navItems = [
+                { key: VIEW_MODES.DASHBOARD, label: 'Dashboard', icon: 'fa-chart-line' },
+                { key: 'shift-new', label: 'Shift Entry', icon: 'fa-pen-to-square' },
+                { key: VIEW_MODES.COWORKERS, label: 'Crew Database', icon: 'fa-users' },
+            ];
+
+            const activeNavKey = (() => {
+                if (view === VIEW_MODES.COWORKERS) return VIEW_MODES.COWORKERS;
+                if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) return 'shift-new';
+                if (view === VIEW_MODES.SHIFT_VIEW) return VIEW_MODES.DASHBOARD;
+                return VIEW_MODES.DASHBOARD;
+            })();
+
+            const handleNavSelect = (key) => {
+                if (key === 'shift-new') {
+                    startNewShift({ date: new Date().toISOString().split('T')[0] });
+                    return;
+                }
+                if (key === VIEW_MODES.DASHBOARD) {
+                    setView(VIEW_MODES.DASHBOARD);
+                    return;
+                }
+                if (key === VIEW_MODES.COWORKERS) {
+                    setCurrentShift(null);
+                    setView(VIEW_MODES.COWORKERS);
+                }
             };
 
             return (
-                <div className="min-h-screen p-4 md:p-8">
-                    <div className="max-w-7xl mx-auto">
+                <div className="min-h-screen flex">
+                    <SidebarNav
+                        items={navItems}
+                        activeKey={activeNavKey}
+                        onSelect={handleNavSelect}
+                        collapsed={sidebarCollapsed}
+                        onToggle={() => setSidebarCollapsed((prev) => !prev)}
+                    />
+                    <div className="flex-1 flex flex-col">
+                        <MobileNav items={navItems} activeKey={activeNavKey} onSelect={handleNavSelect} />
+                        <main className="flex-1 p-4 md:p-8">
+                            <div className="max-w-7xl mx-auto">
                         {/* Header */}
                         <header className="glass rounded-2xl shadow-xl p-6 mb-6 animate-slide-in border border-slate-800/40">
                             <div className="flex items-center justify-between flex-wrap gap-4">
@@ -727,41 +973,51 @@ function serializeShiftForRow(shift) {
                         {/* Main Content */}
                         {!showConfig && isAuthenticated && (
                             <>
-                                {view === 'list' && (
+                                {view === VIEW_MODES.DASHBOARD && (
                                     <div className="space-y-6">
                                         <ShiftList
                                             shifts={shifts}
                                             onEdit={editShift}
                                             onDelete={deleteShift}
                                             onView={viewShift}
-                                              onStartNew={startNewShiftForDate}
+                                            onStartNew={startNewShiftForDate}
                                             loading={loading}
                                             onRefresh={loadShifts}
                                         />
                                         <ChartsPanel shifts={shifts} />
                                     </div>
                                 )}
-                                  {view === 'create' && (
-                                    <ShiftForm
-                                          shift={currentShift}
-                                        onSave={saveShift}
-                                          onCancel={() => setView('list')}
-                                          coworkerDirectory={coworkerDirectory}
-                                    />
-                                )}
-                                {view === 'edit' && currentShift && (
+                                {view === VIEW_MODES.SHIFT_CREATE && (
                                     <ShiftForm
                                         shift={currentShift}
                                         onSave={saveShift}
-                                          onCancel={() => setView('list')}
-                                          coworkerDirectory={coworkerDirectory}
+                                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
+                                        coworkerDirectory={coworkerDirectory}
                                     />
                                 )}
-                                {view === 'view' && currentShift && (
+                                {view === VIEW_MODES.SHIFT_EDIT && currentShift && (
+                                    <ShiftForm
+                                        shift={currentShift}
+                                        onSave={saveShift}
+                                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
+                                        coworkerDirectory={coworkerDirectory}
+                                    />
+                                )}
+                                {view === VIEW_MODES.SHIFT_VIEW && currentShift && (
                                     <ShiftDetail
                                         shift={currentShift}
-                                        onEdit={() => setView('edit')}
-                                        onClose={() => setView('list')}
+                                        onEdit={() => setView(VIEW_MODES.SHIFT_EDIT)}
+                                        onClose={() => setView(VIEW_MODES.DASHBOARD)}
+                                    />
+                                )}
+                                {view === VIEW_MODES.COWORKERS && (
+                                    <CoworkerDatabase
+                                        records={coworkerDirectory}
+                                        onCreate={upsertCoworkerRecord}
+                                        onUpdate={upsertCoworkerRecord}
+                                        onDelete={deleteCoworkerRecord}
+                                        onRefresh={loadCoworkerDirectory}
+                                        positions={CREW_POSITION_OPTIONS}
                                     />
                                 )}
                             </>
@@ -784,6 +1040,105 @@ function serializeShiftForRow(shift) {
                                 </button>
                             </div>
                         )}
+                            </div>
+                        </main>
+                    </div>
+                </div>
+            );
+        }
+
+        function SidebarNav({ items, activeKey, onSelect, collapsed = false, onToggle }) {
+            if (!items?.length) return null;
+            const widthClass = collapsed ? 'lg:w-20' : 'lg:w-64';
+            const headerPadding = collapsed ? 'px-4' : 'px-6';
+            const navPadding = collapsed ? 'px-2' : 'px-4';
+            return (
+                <aside
+                    className={`hidden lg:flex ${widthClass} flex-col bg-slate-950/80 border-r border-slate-800/60 transition-all duration-300`}
+                >
+                    <div
+                        className={`${headerPadding} py-6 border-b border-slate-800/60 flex items-center justify-between gap-3`}
+                    >
+                        <div className={`flex items-center ${collapsed ? 'justify-center w-full' : 'gap-3'} transition-all duration-300`}>
+                            <div className="bg-gradient-to-br from-cyan-500 to-fuchsia-500 p-3 rounded-xl text-white text-2xl">
+                                <i className="fas fa-coins"></i>
+                            </div>
+                            {!collapsed && (
+                                <div>
+                                    <p className="text-sm uppercase tracking-widest text-slate-500">Tip Pool</p>
+                                    <h2 className="text-xl font-semibold text-slate-100">Tracker</h2>
+                                </div>
+                            )}
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => onToggle && onToggle()}
+                            className="text-slate-400 hover:text-white bg-slate-900/60 hover:bg-slate-900 border border-slate-700 rounded-lg p-2 transition"
+                            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                        >
+                            <i className={`fas ${collapsed ? 'fa-angles-right' : 'fa-angles-left'}`}></i>
+                        </button>
+                    </div>
+                    <nav className={`flex-1 ${navPadding} py-6 space-y-2 overflow-y-auto`}>
+                        {items.map((item) => {
+                            const isActive = item.key === activeKey;
+                            return (
+                                <button
+                                    key={item.key}
+                                    onClick={() => onSelect(item.key)}
+                                    title={item.label}
+                                    className={`w-full flex items-center ${
+                                        collapsed ? 'justify-center px-0' : 'justify-start px-4 gap-3'
+                                    } py-3 rounded-xl text-sm transition ${
+                                        isActive
+                                            ? 'bg-gradient-to-r from-cyan-500/70 via-fuchsia-500/60 to-fuchsia-500/80 text-white shadow-lg shadow-cyan-500/20'
+                                            : 'text-slate-300 hover:bg-slate-800/60 hover:text-white'
+                                    }`}
+                                >
+                                    <i className={`fas ${item.icon}`}></i>
+                                    <span className={collapsed ? 'sr-only' : ''}>{item.label}</span>
+                                </button>
+                            );
+                        })}
+                    </nav>
+                </aside>
+            );
+        }
+
+        function MobileNav({ items, activeKey, onSelect }) {
+            if (!items?.length) return null;
+            return (
+                <div className="lg:hidden px-4 pt-4">
+                    <div className="glass rounded-2xl border border-slate-800/40 p-4 shadow-lg shadow-slate-950/30">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-slate-100">
+                                <div className="bg-gradient-to-br from-cyan-500 to-fuchsia-500 p-2 rounded-lg text-white">
+                                    <i className="fas fa-coins"></i>
+                                </div>
+                                <div>
+                                    <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">Tip Pool</p>
+                                    <p className="font-semibold">Tracker</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {items.map((item) => {
+                                    const isActive = item.key === activeKey;
+                                    return (
+                                        <button
+                                            key={item.key}
+                                            onClick={() => onSelect(item.key)}
+                                            className={`px-3 py-2 rounded-xl text-xs font-medium tracking-wide transition ${
+                                                isActive
+                                                    ? 'bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white shadow-sm shadow-cyan-500/30'
+                                                    : 'bg-slate-900/70 text-slate-300 border border-slate-800 hover:text-white'
+                                            }`}
+                                        >
+                                            {item.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
                     </div>
                 </div>
             );
@@ -887,6 +1242,409 @@ function serializeShiftForRow(shift) {
                                 <li>Copy the Spreadsheet ID from the URL</li>
                             </ol>
                         </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function CoworkerDatabase({ records = [], onCreate, onUpdate, onDelete, onRefresh, positions = [] }) {
+            const [filter, setFilter] = useState('');
+            const [editingKey, setEditingKey] = useState(null);
+            const [draft, setDraft] = useState({
+                rowIndex: null,
+                id: '',
+                name: '',
+                firstName: '',
+                lastName: '',
+                positions: [],
+                isManager: false,
+            });
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState(null);
+
+            const resetDraft = () => {
+                setEditingKey(null);
+                setDraft({
+                    rowIndex: null,
+                    id: '',
+                    name: '',
+                    firstName: '',
+                    lastName: '',
+                    positions: [],
+                    isManager: false,
+                });
+            };
+
+            const sortedRecords = useMemo(() => {
+                const list = Array.isArray(records) ? [...records] : [];
+                list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                return list;
+            }, [records]);
+
+            const filteredRecords = useMemo(() => {
+                if (!filter) return sortedRecords;
+                const search = filter.trim().toLowerCase();
+                if (!search) return sortedRecords;
+                return sortedRecords.filter((record) => {
+                    const tokens = [
+                        record.id,
+                        record.name,
+                        record.firstName,
+                        record.lastName,
+                        ...(record.positions || []),
+                    ]
+                        .filter(Boolean)
+                        .map((value) => String(value).toLowerCase());
+                    return tokens.some((token) => token.includes(search));
+                });
+            }, [sortedRecords, filter]);
+
+            const positionsList = positions.length ? positions : CREW_POSITION_OPTIONS;
+
+            const handleStartCreate = () => {
+                setMessage(null);
+                setEditingKey('new');
+                setDraft({
+                    rowIndex: null,
+                    id: '',
+                    name: '',
+                    firstName: '',
+                    lastName: '',
+                    positions: [],
+                    isManager: false,
+                });
+            };
+
+            const handleStartEdit = (record) => {
+                setMessage(null);
+                setEditingKey(record.id || `row-${record.rowIndex}`);
+                setDraft({
+                    rowIndex: record.rowIndex || null,
+                    id: record.id || '',
+                    name: record.name || '',
+                    firstName: record.firstName || '',
+                    lastName: record.lastName || '',
+                    positions: Array.isArray(record.positions) ? [...record.positions] : [],
+                    isManager: !!record.isManager,
+                });
+            };
+
+            const handleDraftChange = (field, value) => {
+                setDraft((prev) => ({
+                    ...prev,
+                    [field]: value,
+                }));
+            };
+
+            const togglePosition = (position) => {
+                setDraft((prev) => {
+                    const current = Array.isArray(prev.positions) ? prev.positions : [];
+                    const exists = current.includes(position);
+                    return {
+                        ...prev,
+                        positions: exists ? current.filter((item) => item !== position) : [...current, position],
+                    };
+                });
+            };
+
+            const handleCancel = () => {
+                resetDraft();
+            };
+
+            const handleSubmit = async () => {
+                if (!editingKey) return;
+                setSaving(true);
+                setMessage(null);
+                try {
+                    const payload = { ...draft, positions: Array.from(new Set(draft.positions || [])) };
+                    if (editingKey === 'new') {
+                        await onCreate?.(payload);
+                        setMessage({ type: 'success', text: 'Coworker added.' });
+                    } else {
+                        await onUpdate?.(payload);
+                        setMessage({ type: 'success', text: 'Coworker updated.' });
+                    }
+                    resetDraft();
+                } catch (error) {
+                    setMessage({ type: 'error', text: error?.message || 'Unable to save coworker.' });
+                } finally {
+                    setSaving(false);
+                }
+            };
+
+            const handleDelete = async (record) => {
+                if (!onDelete) return;
+                if (!confirm(`Remove ${record.name || 'this coworker'} from the directory?`)) return;
+                setSaving(true);
+                setMessage(null);
+                try {
+                    await onDelete(record);
+                    setMessage({ type: 'success', text: 'Coworker removed.' });
+                    if (editingKey && (editingKey === record.id || editingKey === `row-${record.rowIndex}`)) {
+                        resetDraft();
+                    }
+                } catch (error) {
+                    setMessage({ type: 'error', text: error?.message || 'Unable to delete coworker.' });
+                } finally {
+                    setSaving(false);
+                }
+            };
+
+            const renderPositionsBadges = (record) => {
+                const list = Array.isArray(record.positions) ? record.positions : [];
+                if (!list.length) {
+                    return <span className="text-xs text-slate-500">—</span>;
+                }
+                return (
+                    <div className="flex flex-wrap gap-2">
+                        {list.map((pos) => (
+                            <span
+                                key={pos}
+                                className="badge-pill bg-slate-800 text-slate-200 border border-slate-700"
+                            >
+                                {pos}
+                            </span>
+                        ))}
+                    </div>
+                );
+            };
+
+            const renderEditRow = (isNew) => (
+                <tr className="glass border border-slate-800/60">
+                    <td className="px-3 py-3 align-top">
+                        <input
+                            type="text"
+                            value={draft.id}
+                            onChange={(e) => handleDraftChange('id', e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="ID (optional)"
+                            disabled={saving}
+                        />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <input
+                            type="text"
+                            value={draft.name}
+                            onChange={(e) => handleDraftChange('name', e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="Display name"
+                            disabled={saving}
+                        />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <input
+                            type="text"
+                            value={draft.firstName}
+                            onChange={(e) => handleDraftChange('firstName', e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="First"
+                            disabled={saving}
+                        />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <input
+                            type="text"
+                            value={draft.lastName}
+                            onChange={(e) => handleDraftChange('lastName', e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="Last"
+                            disabled={saving}
+                        />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <div className="flex flex-wrap gap-2">
+                            {positionsList.map((pos) => {
+                                const active = draft.positions.includes(pos);
+                                return (
+                                    <button
+                                        type="button"
+                                        key={pos}
+                                        onClick={() => togglePosition(pos)}
+                                        disabled={saving}
+                                        className={`text-xs px-3 py-1.5 rounded-full border transition ${
+                                            active
+                                                ? 'bg-cyan-500/30 border-cyan-400/60 text-cyan-100'
+                                                : 'bg-slate-900/70 border-slate-700 text-slate-300 hover:border-cyan-400/60 hover:text-cyan-100'
+                                        }`}
+                                    >
+                                        {pos}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </td>
+                    <td className="px-3 py-3 align-top text-center">
+                        <label className="inline-flex items-center gap-2 text-xs text-slate-300">
+                            <input
+                                type="checkbox"
+                                checked={draft.isManager}
+                                onChange={(e) => handleDraftChange('isManager', e.target.checked)}
+                                className="accent-cyan-500"
+                                disabled={saving}
+                            />
+                            Manager
+                        </label>
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <div className="flex flex-wrap gap-2 justify-end">
+                            <button
+                                type="button"
+                                onClick={handleSubmit}
+                                disabled={saving}
+                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-xs font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
+                            >
+                                {saving ? 'Saving...' : isNew ? 'Add' : 'Save'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleCancel}
+                                disabled={saving}
+                                className="px-4 py-2 rounded-xl border border-slate-700 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-60"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            );
+
+            return (
+                <div className="glass rounded-2xl shadow-xl p-6 border border-slate-800/40 animate-slide-in">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                            <div className="flex items-center gap-2">
+                                <h2 className="text-2xl font-bold text-slate-100">Crew Database</h2>
+                                <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
+                                    {records.length} teammates
+                                </span>
+                            </div>
+                            <p className="text-sm text-slate-400 mt-1">
+                                Manage the roster synced to the <code>Coworkers</code> sheet. This tab will be created automatically if it is missing.
+                            </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                onClick={onRefresh}
+                                className="px-4 py-2 rounded-xl border border-slate-700 text-slate-200 hover:border-cyan-500/60 transition text-sm"
+                                disabled={saving}
+                            >
+                                <i className="fas fa-rotate mr-2"></i>
+                                Refresh
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleStartCreate}
+                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
+                                disabled={saving}
+                            >
+                                <i className="fas fa-user-plus mr-2"></i>
+                                Add Coworker
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="mt-6">
+                        <input
+                            type="search"
+                            value={filter}
+                            onChange={(e) => setFilter(e.target.value)}
+                            className="w-full px-4 py-2.5 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="Search by name, position, or ID..."
+                            disabled={saving && !editingKey}
+                        />
+                    </div>
+
+                    {message && (
+                        <div
+                            className={`mt-4 rounded-xl px-4 py-3 text-sm border ${
+                                message.type === 'success'
+                                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                                    : 'border-rose-500/40 bg-rose-500/10 text-rose-200'
+                            }`}
+                        >
+                            {message.text}
+                        </div>
+                    )}
+
+                    <div className="mt-6 overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                            <thead>
+                                <tr className="text-left text-slate-400 uppercase text-xs tracking-widest">
+                                    <th className="px-3 py-2 font-medium">ID</th>
+                                    <th className="px-3 py-2 font-medium">Display Name</th>
+                                    <th className="px-3 py-2 font-medium">First</th>
+                                    <th className="px-3 py-2 font-medium">Last</th>
+                                    <th className="px-3 py-2 font-medium">Positions</th>
+                                    <th className="px-3 py-2 font-medium text-center">Manager</th>
+                                    <th className="px-3 py-2 font-medium text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/40">
+                                {editingKey === 'new' && renderEditRow(true)}
+                                {filteredRecords.map((record) => {
+                                    const key = record.id || `row-${record.rowIndex}`;
+                                    const isEditing = editingKey === key;
+                                    if (isEditing) {
+                                        return (
+                                            <React.Fragment key={key}>
+                                                {renderEditRow(false)}
+                                            </React.Fragment>
+                                        );
+                                    }
+                                    return (
+                                        <tr key={key} className="hover:bg-slate-900/40 transition">
+                                            <td className="px-3 py-3 text-slate-300">{record.id || <span className="text-xs text-slate-500">—</span>}</td>
+                                            <td className="px-3 py-3 text-slate-100 font-medium flex items-center gap-2">
+                                                {record.name || <span className="text-xs text-slate-500">Unnamed</span>}
+                                                {record.isSelf && (
+                                                    <span className="badge-pill bg-cyan-500/30 text-cyan-100 border border-cyan-400/40">You</span>
+                                                )}
+                                            </td>
+                                            <td className="px-3 py-3 text-slate-300">{record.firstName || <span className="text-xs text-slate-500">—</span>}</td>
+                                            <td className="px-3 py-3 text-slate-300">{record.lastName || <span className="text-xs text-slate-500">—</span>}</td>
+                                            <td className="px-3 py-3">{renderPositionsBadges(record)}</td>
+                                            <td className="px-3 py-3 text-center">
+                                                {record.isManager ? (
+                                                    <span className="badge-pill bg-amber-500/20 text-amber-100 border border-amber-400/40">Manager</span>
+                                                ) : (
+                                                    <span className="text-xs text-slate-500">—</span>
+                                                )}
+                                            </td>
+                                            <td className="px-3 py-3">
+                                                <div className="flex items-center justify-end gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleStartEdit(record)}
+                                                        className="px-3 py-2 rounded-xl border border-slate-700 text-xs text-slate-200 hover:border-cyan-500/50 hover:text-cyan-100 transition"
+                                                        disabled={saving}
+                                                    >
+                                                        <i className="fas fa-pen mr-2"></i>
+                                                        Edit
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleDelete(record)}
+                                                        className="px-3 py-2 rounded-xl border border-rose-500/40 text-xs text-rose-200 hover:bg-rose-500/20 transition"
+                                                        disabled={saving}
+                                                    >
+                                                        <i className="fas fa-trash mr-2"></i>
+                                                        Delete
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                                {!filteredRecords.length && editingKey !== 'new' && (
+                                    <tr>
+                                        <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                                            No coworkers match your search.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             );
