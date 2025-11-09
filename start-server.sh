@@ -34,5 +34,17 @@ echo ""
 echo "================================================"
 echo ""
 
+# Build assets before serving
+if [ -f "package.json" ]; then
+    echo "🛠  Building front-end bundle..."
+    if ! npm run build >/dev/null; then
+        echo "❌ Build failed. Fix issues above before starting the server."
+        exit 1
+    fi
+    echo "✅ Build complete."
+else
+    echo "⚠️  package.json not found; skipping build step."
+fi
+
 # Start the server
 python3 -m http.server $PORT
