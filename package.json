@@ -1,7 +1,7 @@
 {
-  "name": "workspace",
+  "name": "bar-tracker",
   "version": "1.0.0",
-  "description": "",
+  "description": "Bar Tracker – shift tracking dashboard with Google Sheets sync",
   "main": "control-server.js",
   "scripts": {
     "build": "NODE_ENV=production node esbuild.config.mjs",

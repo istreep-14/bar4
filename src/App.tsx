@@ -145,6 +145,14 @@ function serializeShiftForRow(shift) {
             const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
             useEffect(() => {
+                if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) {
+                    setSidebarCollapsed(true);
+                } else if (view === VIEW_MODES.DASHBOARD || view === VIEW_MODES.SHIFT_DETAIL) {
+                    setSidebarCollapsed(false);
+                }
+            }, [view]);
+
+            useEffect(() => {
                 authSessionRef.current = authSession;
             }, [authSession]);
 
@@ -879,7 +887,7 @@ function serializeShiftForRow(shift) {
                                     </div>
                                     <div>
                                         <h1 className="text-3xl font-bold text-slate-100">
-                                            Tip Pool Tracker
+                                            Bar Tracker
                                         </h1>
                                         <p className="text-slate-400 text-sm">Track your shifts, tips, and earnings</p>
                                     </div>
@@ -1065,7 +1073,7 @@ function serializeShiftForRow(shift) {
                             </div>
                             {!collapsed && (
                                 <div>
-                                    <p className="text-sm uppercase tracking-widest text-slate-500">Tip Pool</p>
+                                    <p className="text-sm uppercase tracking-widest text-slate-500">Bar Tracker</p>
                                     <h2 className="text-xl font-semibold text-slate-100">Tracker</h2>
                                 </div>
                             )}
@@ -1116,7 +1124,7 @@ function serializeShiftForRow(shift) {
                                     <i className="fas fa-coins"></i>
                                 </div>
                                 <div>
-                                    <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">Tip Pool</p>
+                                    <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">Bar Tracker</p>
                                     <p className="font-semibold">Tracker</p>
                                 </div>
                             </div>
@@ -2401,6 +2409,16 @@ function serializeShiftForRow(shift) {
             },
         };
 
+        const SHIFT_FORM_PAGE_DEFS = [
+            { key: 'overview', label: 'Overview', icon: 'fa-chart-simple' },
+            { key: 'timings', label: 'Timings', icon: 'fa-clock' },
+            { key: 'cuts', label: 'Cuts', icon: 'fa-layer-group' },
+            { key: 'crew', label: 'Crew', icon: 'fa-people-group' },
+            { key: 'parties', label: 'Parties', icon: 'fa-martini-glass-citrus' },
+            { key: 'enhancements', label: 'Enhancements', icon: 'fa-sliders' },
+            { key: 'drinking', label: 'Drinks', icon: 'fa-wine-glass' },
+        ];
+
         const DEFAULT_SHIFT_TEMPLATE = {
             id: '',
             date: new Date().toISOString().split('T')[0],
@@ -3183,14 +3201,7 @@ function serializeShiftForRow(shift) {
                 [shift]
             );
             const [formData, setFormData] = useState(initialFormSnapshot);
-            const [panelOpen, setPanelOpen] = useState({
-                timings: false,
-                cuts: false,
-                coworkers: false,
-                parties: false,
-                enhancements: false,
-                drinking: false,
-            });
+            const [activePage, setActivePage] = useState(SHIFT_FORM_PAGE_DEFS[0].key);
             const [sectionOpen, setSectionOpen] = useState({
                 wage: false,
                 overtime: false,
@@ -3253,6 +3264,7 @@ function serializeShiftForRow(shift) {
                 setPartySnapshots({});
                 setExpandedCrewRows({});
                 setSectionOpen({ wage: false, overtime: false, chump: false });
+                setActivePage(SHIFT_FORM_PAGE_DEFS[0].key);
             }, [initialFormSnapshot]);
 
             useEffect(() => {
@@ -3283,10 +3295,6 @@ function serializeShiftForRow(shift) {
                     return { ...prev, cuts: nextCuts };
                 });
             }, [formData.type, Object.keys(formData.parties || {}).join('|')]);
-
-            const togglePanel = (panel) => {
-                setPanelOpen((prev) => ({ ...prev, [panel]: !prev[panel] }));
-            };
 
             const recalcWageTotals = (draft) => {
                 if (!draft || !draft.wage) return;
@@ -3854,7 +3862,7 @@ function serializeShiftForRow(shift) {
 
                 setPartySnapshots((prev) => ({ ...prev, [partyId]: null }));
                 setExpandedParties((prev) => ({ ...prev, [partyId]: true }));
-                setPanelOpen((prev) => ({ ...prev, parties: true }));
+                setActivePage('parties');
             };
 
             const handleAddCut = () => {
@@ -3873,7 +3881,7 @@ function serializeShiftForRow(shift) {
                 });
                 setCutSnapshots((prev) => ({ ...prev, [cutKey]: null }));
                 setExpandedCuts((prev) => ({ ...prev, [cutKey]: true }));
-                setPanelOpen((prev) => ({ ...prev, cuts: true }));
+                setActivePage('cuts');
             };
 
             const togglePartyDetails = (partyId) => {
@@ -4106,7 +4114,7 @@ function serializeShiftForRow(shift) {
                     next.drinking.items.push({ name: '', code: '', abv: '', oz: '', sbe: '', type: '', quantity: 1 });
                     return next;
                 });
-                setPanelOpen((prev) => ({ ...prev, drinking: true }));
+                setActivePage('drinking');
             };
 
             const handleSubmit = (e) => {
@@ -4233,6 +4241,7 @@ function serializeShiftForRow(shift) {
             const quickPanels = [
                 {
                     key: 'cuts',
+                    page: 'cuts',
                     icon: 'fa-chart-pie',
                     label: 'Cuts',
                     metric: Object.keys(formData.cuts || {}).length,
@@ -4240,6 +4249,7 @@ function serializeShiftForRow(shift) {
                 },
                 {
                     key: 'parties',
+                    page: 'parties',
                     icon: 'fa-glass-cheers',
                     label: 'Parties',
                     metric: partyCount,
@@ -4247,6 +4257,7 @@ function serializeShiftForRow(shift) {
                 },
                 {
                     key: 'coworkers',
+                    page: 'crew',
                     icon: 'fa-people-group',
                     label: 'Crew',
                     metric: coworkerCount,
@@ -4254,6 +4265,7 @@ function serializeShiftForRow(shift) {
                 },
                 {
                     key: 'enhancements',
+                    page: 'enhancements',
                     icon: 'fa-sliders',
                     label: 'Enhancements',
                     metric: '',
@@ -4261,6 +4273,7 @@ function serializeShiftForRow(shift) {
                 },
                 {
                     key: 'drinking',
+                    page: 'drinking',
                     icon: 'fa-wine-glass',
                     label: 'Drinks',
                     metric: formData.drinking?.items?.length || 0,
@@ -4375,12 +4388,15 @@ function serializeShiftForRow(shift) {
                         />
 
                         <form onSubmit={handleSubmit} className="px-8 py-8 space-y-8">
-
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div className="flex flex-col lg:flex-row gap-8">
+                                <div className="flex-1 space-y-8">
+                                    {activePage === 'overview' && (
+                                        <>
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div className="md:col-span-1">
                                     <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
                                         Start Time
-                                        <button type="button" onClick={() => togglePanel('timings')} className="text-slate-500 hover:text-cyan-300">
+                                          <button type="button" onClick={() => setActivePage('timings')} className="text-slate-500 hover:text-cyan-300">
                                             <i className="fas fa-clock"></i>
                                         </button>
                                     </label>
@@ -4404,7 +4420,7 @@ function serializeShiftForRow(shift) {
                                 <div className="md:col-span-1">
                                     <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
                                         End Time
-                                        <button type="button" onClick={() => togglePanel('timings')} className="text-slate-500 hover:text-cyan-300">
+                                          <button type="button" onClick={() => setActivePage('timings')} className="text-slate-500 hover:text-cyan-300">
                                             <i className="fas fa-business-time"></i>
                                         </button>
                                     </label>
@@ -4442,7 +4458,7 @@ function serializeShiftForRow(shift) {
                                         </button>
                                         <button
                                             type="button"
-                                            onClick={() => togglePanel('cuts')}
+                                              onClick={() => setActivePage('cuts')}
                                             className="icon-button text-slate-500 hover:text-cyan-300"
                                             title="Open cuts"
                                         >
@@ -4495,41 +4511,50 @@ function serializeShiftForRow(shift) {
                                             {chumpStatus === 'recorded' ? 'Logged' : chumpStatus === 'pending' ? 'Result Pending' : 'Not Played'}
                                         </span>
                                     </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => togglePanel('enhancements')}
-                                        className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
-                                    >
-                                        Manage Enhancements
-                                        <i className="fas fa-arrow-right"></i>
-                                    </button>
+                                      <button
+                                          type="button"
+                                          onClick={() => setActivePage('enhancements')}
+                                          className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
+                                      >
+                                          Manage Enhancements
+                                          <i className="fas fa-arrow-right"></i>
+                                      </button>
                                 </div>
                             </div>
 
                             <div className="flex flex-wrap gap-3">
                                 {quickPanels.map((panel) => (
-                                    <button
-                                        key={panel.key}
-                                        type="button"
-                                        onClick={() => togglePanel(panel.key)}
-                                        className={`icon-button glass px-4 py-3 rounded-2xl flex items-center gap-3 border border-slate-800/60 ${panelOpen[panel.key] ? 'ring-2 ring-cyan-500/40' : ''}`}
-                                    >
+                                <button
+                                    key={panel.key}
+                                    type="button"
+                                    onClick={() => setActivePage(panel.page)}
+                                    className={`icon-button glass px-4 py-3 rounded-2xl flex items-center gap-3 border border-slate-800/60 ${
+                                        activePage === panel.page ? 'ring-2 ring-cyan-500/40' : ''
+                                    }`}
+                                >
                                         <div className="relative">
                                             <span className="w-8 h-8 rounded-xl bg-slate-900/70 flex items-center justify-center text-cyan-300">
                                                 <i className={`fas ${panel.icon}`}></i>
                                             </span>
-                                            <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full shadow ${statusBadgeClass(panel.status)}`}></span>
+                                        <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full shadow ${statusBadgeClass(panel.status)}`}></span>
                                         </div>
                                         <div className="text-left">
                                             <p className="text-xs uppercase tracking-wider text-slate-400">{panel.label}</p>
                                             <p className="text-sm font-semibold text-slate-200">{panel.metric || '—'}</p>
                                         </div>
-                                        <i className={`fas fa-chevron-${panelOpen[panel.key] ? 'up' : 'down'} text-slate-600`}></i>
+                                    <i
+                                        className={`fas ${
+                                            activePage === panel.page ? 'fa-circle-dot text-cyan-200' : 'fa-arrow-right text-slate-600'
+                                        }`}
+                                    ></i>
                                     </button>
                                 ))}
                                 <button
                                     type="button"
-                                    onClick={handleAddParty}
+                                onClick={() => {
+                                    handleAddParty();
+                                    setActivePage('parties');
+                                }}
                                     className="icon-button glass px-4 py-3 rounded-2xl flex items-center gap-2 text-slate-200 border border-slate-800/60 hover:border-cyan-500/50"
                                 >
                                     <i className="fas fa-plus"></i>
@@ -4537,21 +4562,14 @@ function serializeShiftForRow(shift) {
                                 </button>
                             </div>
 
-                            {panelOpen.timings && (
-                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                      <div className="flex items-center justify-between">
-                                          <button
-                                              type="button"
-                                              onClick={() => togglePanel('timings')}
-                                              className="text-lg font-semibold text-slate-100 hover:text-cyan-200 transition flex items-center gap-2"
-                                          >
-                                              Timing Buckets
-                                              <i className={`fas fa-chevron-${panelOpen.timings ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                          </button>
-                                        <button onClick={() => togglePanel('timings')} type="button" className="text-slate-500 hover:text-slate-200">
-                                            <i className="fas fa-xmark"></i>
-                                        </button>
-                                    </div>
+                        </>
+                    )}
+                                    {activePage === 'timings' && (
+                                        <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
+                                            <h3 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+                                                <i className="fas fa-clock text-slate-400"></i>
+                                                Timing Buckets
+                                            </h3>
                                       {['present', 'clock', 'tips', 'working'].map((bucket) => (
                                           <div key={bucket} className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
                                               <div className="md:col-span-1">
@@ -4610,25 +4628,21 @@ function serializeShiftForRow(shift) {
                                               </div>
                                           </div>
                                       ))}
-                                </div>
-                            )}
+                                  </div>
+                              )}
 
-                            {panelOpen.cuts && (
+                        {activePage === 'cuts' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('cuts')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            Cuts
-                                            <i className={`fas fa-chevron-${panelOpen.cuts ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
-                                        <button type="button" onClick={handleAddCut} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
-                                            <i className="fas fa-plus"></i>
-                                            Custom Cut
-                                        </button>
-                                    </div>
+                                        <div className="flex items-center justify-between">
+                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                                <i className="fas fa-layer-group text-slate-400"></i>
+                                                Cuts
+                                            </h3>
+                                            <button type="button" onClick={handleAddCut} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
+                                                <i className="fas fa-plus"></i>
+                                                Custom Cut
+                                            </button>
+                                        </div>
                                     <div className="space-y-3">
                                         {Object.entries(formData.cuts || {}).map(([key, cut]) => {
                                             const expanded = !!expandedCuts[key];
@@ -4780,22 +4794,18 @@ function serializeShiftForRow(shift) {
                                 </div>
                             )}
 
-                            {panelOpen.parties && (
+                        {activePage === 'parties' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('parties')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            Parties &amp; Events
-                                            <i className={`fas fa-chevron-${panelOpen.parties ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
-                                        <button type="button" onClick={handleAddParty} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
-                                            <i className="fas fa-plus"></i>
-                                            Add Party
-                                        </button>
-                                    </div>
+                                      <div className="flex items-center justify-between">
+                                          <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                              <i className="fas fa-martini-glass-citrus text-slate-400"></i>
+                                              Parties &amp; Events
+                                          </h3>
+                                          <button type="button" onClick={handleAddParty} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
+                                              <i className="fas fa-plus"></i>
+                                              Add Party
+                                          </button>
+                                      </div>
                                     {partyCount === 0 && <p className="text-sm text-slate-500">No parties logged yet.</p>}
                                     <div className="space-y-3">
                                         {Object.entries(formData.parties || {}).map(([id, party], index) => {
@@ -4956,17 +4966,13 @@ function serializeShiftForRow(shift) {
                                 </div>
                             )}
 
-                            {panelOpen.coworkers && (
+                        {activePage === 'crew' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
-                                    <div className="flex flex-wrap items-center justify-between gap-3">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('coworkers')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            Crew Knowledge
-                                            <i className={`fas fa-chevron-${panelOpen.coworkers ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
+                                        <div className="flex flex-wrap items-center justify-between gap-3">
+                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                                <i className="fas fa-people-group text-slate-400"></i>
+                                                Crew Knowledge
+                                            </h3>
                                         <div className="flex flex-wrap items-center gap-2">
                                             <button
                                                 type="button"
@@ -5731,19 +5737,15 @@ function serializeShiftForRow(shift) {
                                 </div>
                             )}
 
-                            {panelOpen.enhancements && (
+                        {activePage === 'enhancements' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
-                                    <div className="flex items-center justify-between">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('enhancements')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            Enhancements &amp; Adjustments
-                                            <i className={`fas fa-chevron-${panelOpen.enhancements ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
-                                        <div className="text-xs text-slate-500">Group overtime, consideration, swindle</div>
-                                    </div>
+                                        <div className="flex items-center justify-between">
+                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                                <i className="fas fa-sliders text-slate-400"></i>
+                                                Enhancements &amp; Adjustments
+                                            </h3>
+                                            <div className="text-xs text-slate-500">Group overtime, consideration, swindle</div>
+                                        </div>
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
                                             <p className="text-xs uppercase tracking-wider text-slate-500">Wage</p>
@@ -5949,17 +5951,13 @@ function serializeShiftForRow(shift) {
                                 </div>
                             )}
 
-                            {panelOpen.drinking && (
+                        {activePage === 'drinking' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('drinking')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            On-Shift Drinking
-                                            <i className={`fas fa-chevron-${panelOpen.drinking ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
+                                        <div className="flex items-center justify-between">
+                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                                <i className="fas fa-wine-glass text-slate-400"></i>
+                                                On-Shift Drinking
+                                            </h3>
                                         <button type="button" onClick={handleAddDrinkingItem} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
                                             <i className="fas fa-plus"></i>
                                             Add Item
@@ -6005,43 +6003,95 @@ function serializeShiftForRow(shift) {
                                                 className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
                                                 placeholder="Qty"
                                             />
-                                            <input
-                                                type="number"
-                                                step="0.01"
-                                                value={item.sbe || ''}
-                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.sbe`, e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="SBE"
-                                            />
-                                        </div>
+                                              <input
+                                                  type="number"
+                                                  step="0.01"
+                                                  value={item.sbe || ''}
+                                                  onChange={(e) => updateFormPath(`drinking.items.${idx}.sbe`, e.target.value)}
+                                                  className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                  placeholder="SBE"
+                                              />
+                                              <div className="flex items-center justify-end gap-2 md:col-span-6">
+                                                  <button
+                                                      type="button"
+                                                      onClick={() => duplicateDrinkingItem(idx)}
+                                                      className="text-xs px-3 py-1.5 border border-slate-700 text-slate-300 rounded-lg hover:border-cyan-500/40"
+                                                  >
+                                                      Duplicate
+                                                  </button>
+                                                  <button
+                                                      type="button"
+                                                      onClick={() => handleDeleteDrinkingItem(idx)}
+                                                      className="text-xs px-3 py-1.5 border border-rose-500/40 text-rose-300 rounded-lg hover:bg-rose-500/10"
+                                                  >
+                                                      Remove
+                                                  </button>
+                                              </div>
+                                          </div>
                                     ))}
                                 </div>
                             )}
 
-                            <div className="flex flex-col gap-4">
-                                <textarea
-                                    value={formData.meta?.notes || ''}
-                                    onChange={(e) => updateFormPath('meta.notes', e.target.value)}
-                                    className="w-full min-h-[120px] px-4 py-3 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm"
-                                    placeholder="Context, observations, weather, promotions..."
-                                ></textarea>
-                                <div className="flex gap-4">
+                        </div>
+                        <aside className="w-full lg:w-64 space-y-3">
+                            {SHIFT_FORM_PAGE_DEFS.map((page) => {
+                                const isActive = activePage === page.key;
+                                return (
                                     <button
-                                        type="submit"
-                                        className="flex-1 bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-8 py-4 rounded-2xl font-semibold text-lg shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 transition"
-                                    >
-                                        <i className="fas fa-save mr-3"></i>
-                                        Save Shift
-                                    </button>
-                                    <button
+                                        key={page.key}
                                         type="button"
-                                        onClick={onCancel}
-                                        className="px-6 py-4 rounded-2xl border border-slate-700 text-slate-300 hover:border-slate-500"
+                                        onClick={() => setActivePage(page.key)}
+                                        className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl border transition ${
+                                            isActive
+                                                ? 'border-cyan-500/60 bg-cyan-500/10 text-cyan-100'
+                                                : 'border-slate-800/60 bg-slate-900/60 text-slate-300 hover:border-slate-700'
+                                        }`}
                                     >
-                                        Cancel
+                                        <span className="flex items-center gap-3">
+                                            <span
+                                                className={`w-9 h-9 rounded-xl flex items-center justify-center ${
+                                                    isActive ? 'bg-cyan-500/30 text-cyan-100' : 'bg-slate-900/80 text-slate-500'
+                                                }`}
+                                            >
+                                                <i className={`fas ${page.icon}`}></i>
+                                            </span>
+                                            <span className="font-medium">{page.label}</span>
+                                        </span>
+                                        <i className={`fas fa-chevron-right text-xs ${isActive ? 'text-cyan-300' : 'text-slate-500'}`}></i>
                                     </button>
-                                </div>
-                            </div>
+                                );
+                            })}
+                        </aside>
+                    </div>
+
+                    {activePage === 'overview' && (
+                        <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-3">
+                            <label className="text-xs uppercase tracking-widest text-slate-500">Shift Notes</label>
+                            <textarea
+                                value={formData.meta?.notes || ''}
+                                onChange={(e) => updateFormPath('meta.notes', e.target.value)}
+                                className="w-full min-h-[120px] px-4 py-3 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm"
+                                placeholder="Context, observations, weather, promotions..."
+                            ></textarea>
+                        </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-4 justify-end">
+                        <button
+                            type="submit"
+                            className="flex-1 min-w-[180px] bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-8 py-4 rounded-2xl font-semibold text-lg shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 transition"
+                        >
+                            <i className="fas fa-save mr-3"></i>
+                            Save Shift
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onCancel}
+                            className="px-6 py-4 rounded-2xl border border-slate-700 text-slate-300 hover:border-slate-500"
+                        >
+                            Cancel
+                        </button>
+                    </div>
                         </form>
                     </div>
                 </div>

@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
-const htmlPath = resolve(root, 'tip-pool-tracker.html');
+const htmlPath = resolve(root, 'bar-tracker.html');
 const outputPath = resolve(root, 'src/App.tsx');
 
 const html = readFileSync(htmlPath, 'utf8');
@@ -11,14 +11,14 @@ const scriptStartToken = '<script type="text/babel">';
 const renderToken = '// Render App';
 
 const startIndex = html.indexOf(scriptStartToken);
-if (startIndex === -1) {
-  throw new Error('Failed to find <script type="text/babel"> in tip-pool-tracker.html');
+  if (startIndex === -1) {
+    throw new Error('Failed to find <script type="text/babel"> in bar-tracker.html');
 }
 
 const scriptStart = startIndex + scriptStartToken.length;
 const renderIndex = html.indexOf(renderToken, scriptStart);
-if (renderIndex === -1) {
-  throw new Error('Failed to find render token in tip-pool-tracker.html');
+  if (renderIndex === -1) {
+    throw new Error('Failed to find render token in bar-tracker.html');
 }
 
 let code = html.slice(scriptStart, renderIndex);

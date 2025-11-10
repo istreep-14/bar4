@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
-const htmlPath = resolve(root, 'tip-pool-tracker.html');
+const htmlPath = resolve(root, 'bar-tracker.html');
 
 let html = readFileSync(htmlPath, 'utf8');
 
@@ -23,4 +23,4 @@ html = html.replace(
 );
 
 writeFileSync(htmlPath, html);
-console.log('Updated tip-pool-tracker.html');
+console.log('Updated bar-tracker.html');

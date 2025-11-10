@@ -1,13 +1,13 @@
 const defaultPort = 8000;
 
 export const APP_SERVER_PORT =
-  typeof window !== 'undefined' && typeof window.TIP_POOL_APP_PORT === 'string'
-    ? parseInt(window.TIP_POOL_APP_PORT, 10) || defaultPort
+  typeof window !== 'undefined' && typeof window.BAR_TRACKER_APP_PORT === 'string'
+    ? parseInt(window.BAR_TRACKER_APP_PORT, 10) || defaultPort
     : defaultPort;
 
 export const CONTROL_SERVER_ORIGIN =
-  typeof window !== 'undefined' && typeof window.TIP_POOL_CONTROL_ORIGIN === 'string'
-    ? window.TIP_POOL_CONTROL_ORIGIN
+  typeof window !== 'undefined' && typeof window.BAR_TRACKER_CONTROL_ORIGIN === 'string'
+    ? window.BAR_TRACKER_CONTROL_ORIGIN
     : 'http://localhost:4100';
 
 export const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

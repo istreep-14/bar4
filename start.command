@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Tip Pool Tracker launcher
+# Bar Tracker launcher
 # This helper starts the dev server and opens the app in your default browser.
 
 set -euo pipefail
@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PORT="${TIP_POOL_APP_PORT:-8000}"
+PORT="${BAR_TRACKER_APP_PORT:-8000}"
 
 if [ ! -x "./start-server.sh" ]; then
   echo "Making start-server.sh executable..."
@@ -26,10 +26,10 @@ else
   echo "Warning: package.json not found. Skipping npm install."
 fi
 
-LOG_FILE="${SCRIPT_DIR}/.tip-pool-server.log"
+LOG_FILE="${SCRIPT_DIR}/.bar-tracker-server.log"
 
 echo "================================================"
-echo " Tip Pool Tracker – Quick Start"
+echo " Bar Tracker – Quick Start"
 echo "================================================"
 echo "Using directory : $SCRIPT_DIR"
 echo "Server port     : $PORT"
@@ -85,7 +85,7 @@ wait_for_server() {
   local max_attempts="${1:-40}"
   local delay="${2:-0.5}"
   local attempt=0
-  local url="http://127.0.0.1:${PORT}/tip-pool-tracker.html"
+  local url="http://127.0.0.1:${PORT}/bar-tracker.html"
 
   while (( attempt < max_attempts )); do
     if ! ps -p "$SERVER_PID" >/dev/null 2>&1; then
@@ -125,7 +125,7 @@ else
   exit 1
 fi
 
-APP_URL="http://localhost:${PORT}/tip-pool-tracker.html"
+APP_URL="http://localhost:${PORT}/bar-tracker.html"
 
 echo "Opening $APP_URL"
 if command -v xdg-open >/dev/null 2>&1; then

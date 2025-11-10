@@ -2,7 +2,7 @@
 
 /**
  * Lightweight control server that can bootstrap the existing static Python
- * server on demand. Designed to be run locally alongside the tip pool tracker.
+ * server on demand. Designed to be run locally alongside Bar Tracker.
  */
 
 const http = require('http');

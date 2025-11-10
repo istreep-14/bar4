@@ -1,4 +1,4 @@
-# Tip Pool Tracking System - Complete Documentation
+# Bar Tracker System - Complete Documentation
 
 ## Table of Contents
 1. [Overview](#overview)
@@ -2032,7 +2032,7 @@ EV: $7.125
 Profit: $0 - $7.125 = -$7.125
 ```
 
-### Theoretical Tip Pool
+### Theoretical Pool
 
 ```
 Theoretical pool = Sum of (all theoretical cuts before swindle)
