@@ -3206,6 +3206,7 @@ function serializeShiftForRow(shift) {
             const [partySnapshots, setPartySnapshots] = useState({});
             const [expandedCrewRows, setExpandedCrewRows] = useState({});
             const shiftTypeDropdownRef = useRef(null);
+            const dateInputRef = useRef(null);
             const bartenderDirectory = useMemo(() => {
                 if (!coworkerDirectory.length) return [];
                 return coworkerDirectory.filter((member) => {
@@ -4199,6 +4200,29 @@ function serializeShiftForRow(shift) {
             const shiftTypeMeta = SHIFT_TYPE_META[formData.type] || SHIFT_TYPE_META.default;
             const headerIcon = shiftTypeMeta.icon || (shiftTypeMode === 'auto' ? 'fa-circle-half-stroke' : 'fa-circle-question');
             const headerGradient = 'from-slate-950 via-slate-900 to-slate-950';
+            const shiftDateObject = useMemo(() => {
+                if (!formData.date) return null;
+                const parts = formData.date.split('-').map(Number);
+                if (parts.length !== 3) return null;
+                const [year, month, day] = parts;
+                if (!year || !month || !day) return null;
+                const parsed = new Date(year, month - 1, day);
+                return Number.isNaN(parsed.getTime()) ? null : parsed;
+            }, [formData.date]);
+            const formattedShiftDate = shiftDateObject
+                ? shiftDateObject.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                : 'Set Date';
+            const weekdayLabel = shiftDateObject
+                ? shiftDateObject.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase()
+                : 'SET DATE';
+            const openDatePicker = () => {
+                if (!dateInputRef.current) return;
+                if (typeof dateInputRef.current.showPicker === 'function') {
+                    dateInputRef.current.showPicker();
+                } else {
+                    dateInputRef.current.click();
+                }
+            };
             const partyCount = Object.keys(formData.parties || {}).length;
             const bartenderCount = (formData.coworkers?.bartenders || []).length;
             const serverCount = (formData.coworkers?.servers || []).length;
@@ -4261,22 +4285,68 @@ function serializeShiftForRow(shift) {
                     <div className="glass rounded-3xl shadow-2xl overflow-hidden animate-slide-in border border-slate-800/40">
                         <div className={`bg-gradient-to-r ${headerGradient} px-8 py-6 flex items-center justify-between`}>
                             <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-white text-2xl">
-                                    <i className={`fas ${headerIcon}`}></i>
+                                <div className="relative" ref={shiftTypeDropdownRef}>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShiftTypeMenuOpen((prev) => !prev)}
+                                        className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-white text-2xl hover:bg-white/30 transition focus:outline-none focus:ring-2 focus:ring-cyan-400/80"
+                                        title={shiftTypeLabel}
+                                        aria-label={shiftTypeLabel}
+                                    >
+                                        <i className={`fas ${headerIcon}`}></i>
+                                    </button>
+                                    {shiftTypeMenuOpen && (
+                                        <div className="absolute left-0 top-full mt-3 w-48 bg-slate-900/95 border border-slate-700 rounded-xl shadow-lg backdrop-blur space-y-1 py-2 z-30">
+                                            <button
+                                                type="button"
+                                                onClick={() => selectShiftType('auto')}
+                                                className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                    shiftTypeMode === 'auto' ? 'text-cyan-200' : 'text-slate-200'
+                                                }`}
+                                            >
+                                                Auto (based on times)
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => selectShiftType('day')}
+                                                className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                    shiftTypeMode === 'manual' && formData.type === 'day' ? 'text-cyan-200' : 'text-slate-200'
+                                                }`}
+                                            >
+                                                Day Shift
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => selectShiftType('night')}
+                                                className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                    shiftTypeMode === 'manual' && formData.type === 'night' ? 'text-cyan-200' : 'text-slate-200'
+                                                }`}
+                                            >
+                                                Night Shift
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => selectShiftType('double')}
+                                                className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                    shiftTypeMode === 'manual' && formData.type === 'double' ? 'text-cyan-200' : 'text-slate-200'
+                                                }`}
+                                            >
+                                                Double Shift
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                                 <div>
-                                    <p className="text-xs uppercase tracking-widest text-white/70">Shift Worksheet</p>
-                                    <h2 className="text-3xl font-semibold text-white">{shift ? 'Edit Shift' : 'Create Shift'}</h2>
-                                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                                        <span className="badge-pill bg-white/15 text-white border border-white/20">
-                                            {shiftTypeMode === 'auto' ? 'Auto Mode' : 'Manual Mode'}
-                                        </span>
-                                        {formData.type && (
-                                            <span className="badge-pill bg-cyan-500/20 text-cyan-100 border border-cyan-400/40">
-                                                {shiftTypeMeta.label}
-                                            </span>
-                                        )}
-                                    </div>
+                                    <p className="text-xs uppercase tracking-[0.4em] text-white/70">{weekdayLabel}</p>
+                                    <button
+                                        type="button"
+                                        onClick={openDatePicker}
+                                        className="mt-1 text-3xl font-semibold text-white flex items-center gap-2 hover:text-cyan-200 transition"
+                                    >
+                                        {formattedShiftDate}
+                                        <i className="fas fa-calendar-alt text-base text-white/60"></i>
+                                    </button>
+                                    <p className="text-sm text-white/60">Shift Worksheet</p>
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
@@ -4294,73 +4364,17 @@ function serializeShiftForRow(shift) {
                                 </button>
                             </div>
                         </div>
+                        <input
+                            ref={dateInputRef}
+                            type="date"
+                            value={formData.date}
+                            onChange={(e) => updateFormPath('date', e.target.value)}
+                            className="absolute w-0 h-0 opacity-0 pointer-events-none"
+                            tabIndex={-1}
+                            aria-hidden="true"
+                        />
 
                         <form onSubmit={handleSubmit} className="px-8 py-8 space-y-8">
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                                <div className="lg:col-span-2">
-                                    <label className="text-sm uppercase tracking-wide text-slate-400">Date</label>
-                                    <input
-                                        type="date"
-                                        value={formData.date}
-                                        onChange={(e) => updateFormPath('date', e.target.value)}
-                                        className="mt-2 w-full px-6 py-4 bg-slate-900/60 border border-slate-700 rounded-2xl text-lg focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                        required
-                                    />
-                                </div>
-                                <div ref={shiftTypeDropdownRef}>
-                                    <label className="text-sm uppercase tracking-wide text-slate-400">Shift Type</label>
-                                    <div className="mt-2 relative">
-                                        <button
-                                            type="button"
-                                            onClick={() => setShiftTypeMenuOpen((prev) => !prev)}
-                                            className="w-full px-5 py-4 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm font-medium flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                        >
-                                            <span>{shiftTypeLabel}</span>
-                                            <i className={`fas fa-chevron-${shiftTypeMenuOpen ? 'up' : 'down'} text-slate-500`}></i>
-                                        </button>
-                                        {shiftTypeMenuOpen && (
-                                            <div className="absolute z-20 mt-2 w-full bg-slate-900/95 border border-slate-700 rounded-xl shadow-lg backdrop-blur space-y-1 py-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => selectShiftType('auto')}
-                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
-                                                        shiftTypeMode === 'auto' ? 'text-cyan-200' : 'text-slate-200'
-                                                    }`}
-                                                >
-                                                    Auto (based on times)
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => selectShiftType('day')}
-                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
-                                                        shiftTypeMode === 'manual' && formData.type === 'day' ? 'text-cyan-200' : 'text-slate-200'
-                                                    }`}
-                                                >
-                                                    Day Shift
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => selectShiftType('night')}
-                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
-                                                        shiftTypeMode === 'manual' && formData.type === 'night' ? 'text-cyan-200' : 'text-slate-200'
-                                                    }`}
-                                                >
-                                                    Night Shift
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => selectShiftType('double')}
-                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
-                                                        shiftTypeMode === 'manual' && formData.type === 'double' ? 'text-cyan-200' : 'text-slate-200'
-                                                    }`}
-                                                >
-                                                    Double Shift
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div className="md:col-span-1">
