@@ -1,43 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import Chart from 'chart.js/auto';
-import { Routes, Route, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { APP_SERVER_PORT, CONTROL_SERVER_ORIGIN, ensureAppServerRunning } from './lib/serverControl';
-import { sheetsAPI, SCOPES } from './lib/googleSheets';
-import {
-  loadStoredAuthToken,
-  storeAuthToken,
-  clearStoredAuthToken,
-  loadCachedShifts,
-  storeCachedShifts,
-  loadPendingQueue,
-  storePendingQueue,
-  CONFIG_STORAGE_KEY,
-  REMOTE_CONFIG_PATH,
-  isOnline,
-} from './lib/storage';
-import CrewDatabasePage from './pages/CrewDatabasePage';
-import DashboardPage from './pages/DashboardPage';
-import ShiftEntryPage from './pages/ShiftEntryPage';
 
-const VIEW_MODES = Object.freeze({
-  DASHBOARD: 'dashboard',
-  SHIFT_CREATE: 'shift-create',
-  SHIFT_EDIT: 'shift-edit',
-  SHIFT_VIEW: 'shift-view',
-  COWORKERS: 'coworkers',
-});
-
-const CREW_POSITION_OPTIONS = ['Bartender', 'Server', 'Expo', 'Busser', 'Hostess', 'Door'];
-const COWORKER_SHEET_NAME = 'Coworkers';
-
-const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.') => {
-  if (!error) return fallback;
-  if (typeof error === 'string') return error;
-  if (error?.result?.error?.message) return error.result.error.message;
-  if (error?.message) return error.message;
-  return fallback;
-};
 
 function serializeShiftForRow(shift) {
             const totalEarnings = parseFloat(shift?.earnings?.total ?? 0) || 0;
@@ -125,9 +88,7 @@ function serializeShiftForRow(shift) {
 
         // Main App Component
         function App() {
-            const navigate = useNavigate();
-            const location = useLocation();
-            const [view, setViewState] = useState(VIEW_MODES.DASHBOARD);
+            const [view, setView] = useState(VIEW_MODES.DASHBOARD);
             const [shifts, setShifts] = useState(() => loadCachedShifts() || []);
             const [currentShift, setCurrentShift] = useState(null);
             const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -150,58 +111,10 @@ function serializeShiftForRow(shift) {
             const [coworkerDirectory, setCoworkerDirectory] = useState([]);
             const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-            const setView = useCallback(
-                (nextView, options = {}) => {
-                    setViewState(nextView);
-                    switch (nextView) {
-                        case VIEW_MODES.DASHBOARD:
-                            navigate('/');
-                            break;
-                        case VIEW_MODES.SHIFT_CREATE:
-                            navigate('/shift/new');
-                            break;
-                        case VIEW_MODES.COWORKERS:
-                            navigate('/crew');
-                            break;
-                        case VIEW_MODES.SHIFT_EDIT: {
-                            const shiftId = options.shiftId || currentShift?.id;
-                            navigate(shiftId ? `/shift/${encodeURIComponent(shiftId)}/edit` : '/shift/new');
-                            break;
-                        }
-                        case VIEW_MODES.SHIFT_VIEW: {
-                            const shiftId = options.shiftId || currentShift?.id;
-                            navigate(shiftId ? `/shift/${encodeURIComponent(shiftId)}/view` : '/shift/new');
-                            break;
-                        }
-                        default:
-                            navigate('/');
-                            break;
-                    }
-                },
-                [navigate, currentShift]
-            );
-
-            useEffect(() => {
-                const path = location.pathname || '/';
-                let nextView = VIEW_MODES.DASHBOARD;
-                if (path.startsWith('/crew')) {
-                    nextView = VIEW_MODES.COWORKERS;
-                } else if (path.startsWith('/shift/new')) {
-                    nextView = VIEW_MODES.SHIFT_CREATE;
-                } else if (/^\/shift\/[^/]+\/edit/.test(path)) {
-                    nextView = VIEW_MODES.SHIFT_EDIT;
-                } else if (/^\/shift\/[^/]+\/view/.test(path)) {
-                    nextView = VIEW_MODES.SHIFT_VIEW;
-                }
-                if (nextView !== view) {
-                    setViewState(nextView);
-                }
-            }, [location.pathname, view]);
-
             useEffect(() => {
                 if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) {
                     setSidebarCollapsed(true);
-                } else if (view === VIEW_MODES.DASHBOARD || view === VIEW_MODES.SHIFT_VIEW) {
+                } else if (view === VIEW_MODES.DASHBOARD || view === VIEW_MODES.SHIFT_DETAIL) {
                     setSidebarCollapsed(false);
                 }
             }, [view]);
@@ -883,83 +796,40 @@ function serializeShiftForRow(shift) {
 
             const editShift = (shift) => {
                 setCurrentShift(shift.data);
-                setView(VIEW_MODES.SHIFT_EDIT, { shiftId: shift?.id });
+                setView(VIEW_MODES.SHIFT_EDIT);
             };
 
             const viewShift = (shift) => {
                 setCurrentShift(shift.data);
-                setView(VIEW_MODES.SHIFT_VIEW, { shiftId: shift?.id });
+                setView(VIEW_MODES.SHIFT_VIEW);
             };
 
             const navItems = [
                 { key: VIEW_MODES.DASHBOARD, label: 'Dashboard', icon: 'fa-chart-line' },
-                { key: VIEW_MODES.SHIFT_CREATE, label: 'Shift Entry', icon: 'fa-pen-to-square' },
+                { key: 'shift-new', label: 'Shift Entry', icon: 'fa-pen-to-square' },
                 { key: VIEW_MODES.COWORKERS, label: 'Crew Database', icon: 'fa-users' },
             ];
 
             const activeNavKey = (() => {
                 if (view === VIEW_MODES.COWORKERS) return VIEW_MODES.COWORKERS;
-                if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT || view === VIEW_MODES.SHIFT_VIEW) {
-                    return VIEW_MODES.SHIFT_CREATE;
-                }
+                if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) return 'shift-new';
+                if (view === VIEW_MODES.SHIFT_VIEW) return VIEW_MODES.DASHBOARD;
                 return VIEW_MODES.DASHBOARD;
             })();
 
             const handleNavSelect = (key) => {
-                if (key === VIEW_MODES.SHIFT_CREATE) {
+                if (key === 'shift-new') {
                     startNewShift({ date: new Date().toISOString().split('T')[0] });
+                    return;
+                }
+                if (key === VIEW_MODES.DASHBOARD) {
+                    setView(VIEW_MODES.DASHBOARD);
                     return;
                 }
                 if (key === VIEW_MODES.COWORKERS) {
                     setCurrentShift(null);
+                    setView(VIEW_MODES.COWORKERS);
                 }
-                setView(key);
-            };
-
-            const ShiftEntryRoute = ({ mode }) => {
-                const { shiftId } = useParams();
-
-                useEffect(() => {
-                    if (mode === VIEW_MODES.SHIFT_CREATE) {
-                        if (!currentShift) {
-                            startNewShift({ date: new Date().toISOString().split('T')[0] });
-                        }
-                        return;
-                    }
-
-                    if (!shiftId) {
-                        setView(VIEW_MODES.DASHBOARD);
-                        return;
-                    }
-
-                    const match = shifts.find((item) => item.id === shiftId);
-                    if (match) {
-                        setCurrentShift(match.data);
-                    } else if (!loading) {
-                        loadShifts();
-                    }
-                }, [mode, shiftId, shifts, loading, startNewShift, loadShifts, setView]);
-
-                if (mode !== VIEW_MODES.SHIFT_CREATE) {
-                    if (!shiftId || !currentShift || currentShift.id !== shiftId) {
-                        return null;
-                    }
-                }
-
-                const effectiveShift =
-                    currentShift ||
-                    deepMergeShift(DEFAULT_SHIFT_TEMPLATE, mode === VIEW_MODES.SHIFT_CREATE ? {} : {});
-
-                return (
-                    <ShiftEntryPage
-                        mode={mode === VIEW_MODES.SHIFT_VIEW ? 'view' : mode === VIEW_MODES.SHIFT_EDIT ? 'edit' : 'create'}
-                        shift={effectiveShift}
-                        onSave={saveShift}
-                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
-                        onEdit={() => setView(VIEW_MODES.SHIFT_EDIT, { shiftId })}
-                        coworkerDirectory={coworkerDirectory}
-                    />
-                );
             };
 
             return (
@@ -1076,63 +946,57 @@ function serializeShiftForRow(shift) {
                         )}
 
                         {/* Main Content */}
-                          {!showConfig && isAuthenticated && (
-                              <Routes>
-                                  <Route
-                                      path="/"
-                                      element={
-                                          <DashboardPage
-                                              shifts={shifts}
-                                              loading={loading}
-                                              onRefresh={loadShifts}
-                                              onEditShift={editShift}
-                                              onDeleteShift={deleteShift}
-                                              onViewShift={viewShift}
-                                              onStartNewShift={startNewShiftForDate}
-                                          />
-                                      }
-                                  />
-                                  <Route
-                                      path="/shift/new"
-                                      element={<ShiftEntryRoute mode={VIEW_MODES.SHIFT_CREATE} />}
-                                  />
-                                  <Route
-                                      path="/shift/:shiftId/edit"
-                                      element={<ShiftEntryRoute mode={VIEW_MODES.SHIFT_EDIT} />}
-                                  />
-                                  <Route
-                                      path="/shift/:shiftId/view"
-                                      element={<ShiftEntryRoute mode={VIEW_MODES.SHIFT_VIEW} />}
-                                  />
-                                  <Route
-                                      path="/crew"
-                                      element={
-                                          <CrewDatabasePage
-                                              records={coworkerDirectory}
-                                              onCreate={upsertCoworkerRecord}
-                                              onUpdate={upsertCoworkerRecord}
-                                              onDelete={deleteCoworkerRecord}
-                                              onRefresh={loadCoworkerDirectory}
-                                              positions={CREW_POSITION_OPTIONS}
-                                          />
-                                      }
-                                  />
-                                  <Route
-                                      path="*"
-                                      element={
-                                          <DashboardPage
-                                              shifts={shifts}
-                                              loading={loading}
-                                              onRefresh={loadShifts}
-                                              onEditShift={editShift}
-                                              onDeleteShift={deleteShift}
-                                              onViewShift={viewShift}
-                                              onStartNewShift={startNewShiftForDate}
-                                          />
-                                      }
-                                  />
-                              </Routes>
-                          )}
+                        {!showConfig && isAuthenticated && (
+                            <>
+                                {view === VIEW_MODES.DASHBOARD && (
+                                    <div className="space-y-6">
+                                        <ShiftList
+                                            shifts={shifts}
+                                            onEdit={editShift}
+                                            onDelete={deleteShift}
+                                            onView={viewShift}
+                                            onStartNew={startNewShiftForDate}
+                                            loading={loading}
+                                            onRefresh={loadShifts}
+                                        />
+                                        <ChartsPanel shifts={shifts} />
+                                    </div>
+                                )}
+                                {view === VIEW_MODES.SHIFT_CREATE && (
+                                    <ShiftForm
+                                        shift={currentShift}
+                                        onSave={saveShift}
+                                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
+                                        coworkerDirectory={coworkerDirectory}
+                                    />
+                                )}
+                                {view === VIEW_MODES.SHIFT_EDIT && currentShift && (
+                                    <ShiftForm
+                                        shift={currentShift}
+                                        onSave={saveShift}
+                                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
+                                        coworkerDirectory={coworkerDirectory}
+                                    />
+                                )}
+                                {view === VIEW_MODES.SHIFT_VIEW && currentShift && (
+                                    <ShiftDetail
+                                        shift={currentShift}
+                                        onEdit={() => setView(VIEW_MODES.SHIFT_EDIT)}
+                                        onClose={() => setView(VIEW_MODES.DASHBOARD)}
+                                    />
+                                )}
+                                  {view === VIEW_MODES.COWORKERS && (
+                                      <CrewDatabasePage
+                                          records={coworkerDirectory}
+                                          onCreate={upsertCoworkerRecord}
+                                          onUpdate={upsertCoworkerRecord}
+                                          onDelete={deleteCoworkerRecord}
+                                          onRefresh={loadCoworkerDirectory}
+                                          positions={CREW_POSITION_OPTIONS}
+                                      />
+                                  )}
+                            </>
+                        )}
 
                         {/* Not Authenticated */}
                         {!showConfig && !isAuthenticated && (
@@ -1353,409 +1217,6 @@ function serializeShiftForRow(shift) {
                                 <li>Copy the Spreadsheet ID from the URL</li>
                             </ol>
                         </div>
-                    </div>
-                </div>
-            );
-        }
-
-        function CoworkerDatabase({ records = [], onCreate, onUpdate, onDelete, onRefresh, positions = [] }) {
-            const [filter, setFilter] = useState('');
-            const [editingKey, setEditingKey] = useState(null);
-            const [draft, setDraft] = useState({
-                rowIndex: null,
-                id: '',
-                name: '',
-                firstName: '',
-                lastName: '',
-                positions: [],
-                isManager: false,
-            });
-            const [saving, setSaving] = useState(false);
-            const [message, setMessage] = useState(null);
-
-            const resetDraft = () => {
-                setEditingKey(null);
-                setDraft({
-                    rowIndex: null,
-                    id: '',
-                    name: '',
-                    firstName: '',
-                    lastName: '',
-                    positions: [],
-                    isManager: false,
-                });
-            };
-
-            const sortedRecords = useMemo(() => {
-                const list = Array.isArray(records) ? [...records] : [];
-                list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-                return list;
-            }, [records]);
-
-            const filteredRecords = useMemo(() => {
-                if (!filter) return sortedRecords;
-                const search = filter.trim().toLowerCase();
-                if (!search) return sortedRecords;
-                return sortedRecords.filter((record) => {
-                    const tokens = [
-                        record.id,
-                        record.name,
-                        record.firstName,
-                        record.lastName,
-                        ...(record.positions || []),
-                    ]
-                        .filter(Boolean)
-                        .map((value) => String(value).toLowerCase());
-                    return tokens.some((token) => token.includes(search));
-                });
-            }, [sortedRecords, filter]);
-
-            const positionsList = positions.length ? positions : CREW_POSITION_OPTIONS;
-
-            const handleStartCreate = () => {
-                setMessage(null);
-                setEditingKey('new');
-                setDraft({
-                    rowIndex: null,
-                    id: '',
-                    name: '',
-                    firstName: '',
-                    lastName: '',
-                    positions: [],
-                    isManager: false,
-                });
-            };
-
-            const handleStartEdit = (record) => {
-                setMessage(null);
-                setEditingKey(record.id || `row-${record.rowIndex}`);
-                setDraft({
-                    rowIndex: record.rowIndex || null,
-                    id: record.id || '',
-                    name: record.name || '',
-                    firstName: record.firstName || '',
-                    lastName: record.lastName || '',
-                    positions: Array.isArray(record.positions) ? [...record.positions] : [],
-                    isManager: !!record.isManager,
-                });
-            };
-
-            const handleDraftChange = (field, value) => {
-                setDraft((prev) => ({
-                    ...prev,
-                    [field]: value,
-                }));
-            };
-
-            const togglePosition = (position) => {
-                setDraft((prev) => {
-                    const current = Array.isArray(prev.positions) ? prev.positions : [];
-                    const exists = current.includes(position);
-                    return {
-                        ...prev,
-                        positions: exists ? current.filter((item) => item !== position) : [...current, position],
-                    };
-                });
-            };
-
-            const handleCancel = () => {
-                resetDraft();
-            };
-
-            const handleSubmit = async () => {
-                if (!editingKey) return;
-                setSaving(true);
-                setMessage(null);
-                try {
-                    const payload = { ...draft, positions: Array.from(new Set(draft.positions || [])) };
-                    if (editingKey === 'new') {
-                        await onCreate?.(payload);
-                        setMessage({ type: 'success', text: 'Coworker added.' });
-                    } else {
-                        await onUpdate?.(payload);
-                        setMessage({ type: 'success', text: 'Coworker updated.' });
-                    }
-                    resetDraft();
-                } catch (error) {
-                    setMessage({ type: 'error', text: error?.message || 'Unable to save coworker.' });
-                } finally {
-                    setSaving(false);
-                }
-            };
-
-            const handleDelete = async (record) => {
-                if (!onDelete) return;
-                if (!confirm(`Remove ${record.name || 'this coworker'} from the directory?`)) return;
-                setSaving(true);
-                setMessage(null);
-                try {
-                    await onDelete(record);
-                    setMessage({ type: 'success', text: 'Coworker removed.' });
-                    if (editingKey && (editingKey === record.id || editingKey === `row-${record.rowIndex}`)) {
-                        resetDraft();
-                    }
-                } catch (error) {
-                    setMessage({ type: 'error', text: error?.message || 'Unable to delete coworker.' });
-                } finally {
-                    setSaving(false);
-                }
-            };
-
-            const renderPositionsBadges = (record) => {
-                const list = Array.isArray(record.positions) ? record.positions : [];
-                if (!list.length) {
-                    return <span className="text-xs text-slate-500">—</span>;
-                }
-                return (
-                    <div className="flex flex-wrap gap-2">
-                        {list.map((pos) => (
-                            <span
-                                key={pos}
-                                className="badge-pill bg-slate-800 text-slate-200 border border-slate-700"
-                            >
-                                {pos}
-                            </span>
-                        ))}
-                    </div>
-                );
-            };
-
-            const renderEditRow = (isNew) => (
-                <tr className="glass border border-slate-800/60">
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.id}
-                            onChange={(e) => handleDraftChange('id', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="ID (optional)"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.name}
-                            onChange={(e) => handleDraftChange('name', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="Display name"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.firstName}
-                            onChange={(e) => handleDraftChange('firstName', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="First"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.lastName}
-                            onChange={(e) => handleDraftChange('lastName', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="Last"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <div className="flex flex-wrap gap-2">
-                            {positionsList.map((pos) => {
-                                const active = draft.positions.includes(pos);
-                                return (
-                                    <button
-                                        type="button"
-                                        key={pos}
-                                        onClick={() => togglePosition(pos)}
-                                        disabled={saving}
-                                        className={`text-xs px-3 py-1.5 rounded-full border transition ${
-                                            active
-                                                ? 'bg-cyan-500/30 border-cyan-400/60 text-cyan-100'
-                                                : 'bg-slate-900/70 border-slate-700 text-slate-300 hover:border-cyan-400/60 hover:text-cyan-100'
-                                        }`}
-                                    >
-                                        {pos}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </td>
-                    <td className="px-3 py-3 align-top text-center">
-                        <label className="inline-flex items-center gap-2 text-xs text-slate-300">
-                            <input
-                                type="checkbox"
-                                checked={draft.isManager}
-                                onChange={(e) => handleDraftChange('isManager', e.target.checked)}
-                                className="accent-cyan-500"
-                                disabled={saving}
-                            />
-                            Manager
-                        </label>
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <div className="flex flex-wrap gap-2 justify-end">
-                            <button
-                                type="button"
-                                onClick={handleSubmit}
-                                disabled={saving}
-                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-xs font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
-                            >
-                                {saving ? 'Saving...' : isNew ? 'Add' : 'Save'}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleCancel}
-                                disabled={saving}
-                                className="px-4 py-2 rounded-xl border border-slate-700 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-60"
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </td>
-                </tr>
-            );
-
-            return (
-                <div className="glass rounded-2xl shadow-xl p-6 border border-slate-800/40 animate-slide-in">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                        <div>
-                            <div className="flex items-center gap-2">
-                                <h2 className="text-2xl font-bold text-slate-100">Crew Database</h2>
-                                <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
-                                    {records.length} teammates
-                                </span>
-                            </div>
-                            <p className="text-sm text-slate-400 mt-1">
-                                Manage the roster synced to the <code>Coworkers</code> sheet. This tab will be created automatically if it is missing.
-                            </p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                            <button
-                                type="button"
-                                onClick={onRefresh}
-                                className="px-4 py-2 rounded-xl border border-slate-700 text-slate-200 hover:border-cyan-500/60 transition text-sm"
-                                disabled={saving}
-                            >
-                                <i className="fas fa-rotate mr-2"></i>
-                                Refresh
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleStartCreate}
-                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
-                                disabled={saving}
-                            >
-                                <i className="fas fa-user-plus mr-2"></i>
-                                Add Coworker
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="mt-6">
-                        <input
-                            type="search"
-                            value={filter}
-                            onChange={(e) => setFilter(e.target.value)}
-                            className="w-full px-4 py-2.5 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="Search by name, position, or ID..."
-                            disabled={saving && !editingKey}
-                        />
-                    </div>
-
-                    {message && (
-                        <div
-                            className={`mt-4 rounded-xl px-4 py-3 text-sm border ${
-                                message.type === 'success'
-                                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                                    : 'border-rose-500/40 bg-rose-500/10 text-rose-200'
-                            }`}
-                        >
-                            {message.text}
-                        </div>
-                    )}
-
-                    <div className="mt-6 overflow-x-auto">
-                        <table className="min-w-full text-sm">
-                            <thead>
-                                <tr className="text-left text-slate-400 uppercase text-xs tracking-widest">
-                                    <th className="px-3 py-2 font-medium">ID</th>
-                                    <th className="px-3 py-2 font-medium">Display Name</th>
-                                    <th className="px-3 py-2 font-medium">First</th>
-                                    <th className="px-3 py-2 font-medium">Last</th>
-                                    <th className="px-3 py-2 font-medium">Positions</th>
-                                    <th className="px-3 py-2 font-medium text-center">Manager</th>
-                                    <th className="px-3 py-2 font-medium text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-800/40">
-                                {editingKey === 'new' && renderEditRow(true)}
-                                {filteredRecords.map((record) => {
-                                    const key = record.id || `row-${record.rowIndex}`;
-                                    const isEditing = editingKey === key;
-                                    if (isEditing) {
-                                        return (
-                                            <React.Fragment key={key}>
-                                                {renderEditRow(false)}
-                                            </React.Fragment>
-                                        );
-                                    }
-                                    return (
-                                        <tr key={key} className="hover:bg-slate-900/40 transition">
-                                            <td className="px-3 py-3 text-slate-300">{record.id || <span className="text-xs text-slate-500">—</span>}</td>
-                                            <td className="px-3 py-3 text-slate-100 font-medium flex items-center gap-2">
-                                                {record.name || <span className="text-xs text-slate-500">Unnamed</span>}
-                                                {record.isSelf && (
-                                                    <span className="badge-pill bg-cyan-500/30 text-cyan-100 border border-cyan-400/40">You</span>
-                                                )}
-                                            </td>
-                                            <td className="px-3 py-3 text-slate-300">{record.firstName || <span className="text-xs text-slate-500">—</span>}</td>
-                                            <td className="px-3 py-3 text-slate-300">{record.lastName || <span className="text-xs text-slate-500">—</span>}</td>
-                                            <td className="px-3 py-3">{renderPositionsBadges(record)}</td>
-                                            <td className="px-3 py-3 text-center">
-                                                {record.isManager ? (
-                                                    <span className="badge-pill bg-amber-500/20 text-amber-100 border border-amber-400/40">Manager</span>
-                                                ) : (
-                                                    <span className="text-xs text-slate-500">—</span>
-                                                )}
-                                            </td>
-                                            <td className="px-3 py-3">
-                                                <div className="flex items-center justify-end gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleStartEdit(record)}
-                                                        className="px-3 py-2 rounded-xl border border-slate-700 text-xs text-slate-200 hover:border-cyan-500/50 hover:text-cyan-100 transition"
-                                                        disabled={saving}
-                                                    >
-                                                        <i className="fas fa-pen mr-2"></i>
-                                                        Edit
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleDelete(record)}
-                                                        className="px-3 py-2 rounded-xl border border-rose-500/40 text-xs text-rose-200 hover:bg-rose-500/20 transition"
-                                                        disabled={saving}
-                                                    >
-                                                        <i className="fas fa-trash mr-2"></i>
-                                                        Delete
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                                {!filteredRecords.length && editingKey !== 'new' && (
-                                    <tr>
-                                        <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
-                                            No coworkers match your search.
-                                        </td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
                     </div>
                 </div>
             );
@@ -6318,4 +5779,61 @@ function serializeShiftForRow(shift) {
                 </div>
             );
         }
-export default App;
+
+const ShiftEntryPage = ({
+    mode = 'create',
+    shift,
+    onSave,
+    onCancel,
+    onEdit,
+    coworkerDirectory = [],
+}) => {
+    if (mode === 'view') {
+        return <ShiftDetail shift={shift} onEdit={onEdit} onClose={onCancel} />;
+    }
+
+    return (
+        <ShiftForm
+            shift={shift}
+            onSave={onSave}
+            onCancel={onCancel}
+            coworkerDirectory={coworkerDirectory}
+        />
+    );
+};
+
+export {
+    serializeShiftForRow,
+    deserializeShiftRow,
+    applyLocalShift,
+    removeLocalShift,
+    estimateRowIndex,
+    DEFAULT_SHIFT_TEMPLATE,
+    deepMergeShift,
+    setNestedValue,
+    getNestedValue,
+    buildInitialTimeDrafts,
+    calculateHoursBetween,
+    timeStringToMinutes,
+    normalizeMinutesDiff,
+    formatTimeDisplay,
+    parseFlexibleTime,
+    inferShiftTypeFromTimes,
+    ensureCutSkeleton,
+    sanitizeBartenderEntry,
+    sanitizeServerEntry,
+    sanitizeSupportEntry,
+    sanitizeChumpPlayer,
+    normalizeCrewData,
+    normalizeShiftPayload,
+    upsertSelfCrew,
+    SHIFT_TYPE_META,
+    SHIFT_FORM_PAGE_DEFS,
+    BARTENDER_LOCATION_OPTIONS,
+    SUPPORT_ROLE_OPTIONS,
+    BARTENDER_STATUS_OPTIONS,
+    ShiftForm,
+    ShiftDetail,
+};
+
+export default ShiftEntryPage;
