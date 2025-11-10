@@ -1884,14 +1884,24 @@ function serializeShiftForRow(shift) {
             };
 
             const summarizeEarnings = (earnings) => {
-                if (!earnings) return 'Tips';
+                if (!earnings || typeof earnings !== 'object') return 'Tips';
+                const toNumber = (value) => {
+                    const numeric = Number(value || 0);
+                    return Number.isNaN(numeric) ? 0 : numeric;
+                };
                 const parts = [];
-                if (earnings.tips) parts.push('Tips');
-                if (earnings.wage) parts.push('Wage');
-                if (earnings.overtime) parts.push('Overtime');
-                if (earnings.chump) parts.push('Chump');
-                if (earnings.consideration) parts.push('Consideration');
-                if (earnings.swindle) parts.push('Adjustments');
+                const tipsTotal = toNumber(earnings?.tips?.total ?? earnings?.tips?.tipOut ?? earnings.tipOut);
+                const wageTotal = toNumber(earnings?.wage?.total ?? earnings?.wage);
+                const wageOvertime = toNumber(earnings?.wage?.overtime ?? earnings?.overtime);
+                const wageDifferential = toNumber(earnings?.wage?.differential?.total);
+                const supplementTotal = toNumber(earnings?.supplement?.total ?? earnings?.supplement);
+
+                if (tipsTotal > 0) parts.push('Tips');
+                if (wageTotal > 0) parts.push('Wage');
+                if (wageDifferential > 0) parts.push('Differential');
+                if (wageOvertime > 0) parts.push('Overtime');
+                if (supplementTotal > 0) parts.push('Supplement');
+
                 return parts.length ? parts.join(' + ') : 'Earnings';
             };
 
@@ -2184,8 +2194,36 @@ function serializeShiftForRow(shift) {
                     barChartRef.current.destroy();
                 }
 
-                const earningsBars = shifts.slice(-8).map((shift) => shift.data.earnings || {});
-                const barLabels = shifts.slice(-8).map((shift) => new Date(shift.data.date).toLocaleDateString());
+                const extractTotals = (earnings = {}) => {
+                    const toNumber = (value) => {
+                        const numeric = Number(value || 0);
+                        return Number.isNaN(numeric) ? 0 : numeric;
+                    };
+                    const tips =
+                        toNumber(earnings?.tips?.total) ||
+                        toNumber(earnings?.tips?.tipOut) + toNumber(earnings?.tips?.chumpChange) ||
+                        toNumber(earnings.tips);
+                    const wage =
+                        toNumber(earnings?.wage?.total) ||
+                        toNumber(earnings?.wage) ||
+                        toNumber(earnings.wageBase);
+                    const supplement =
+                        toNumber(earnings?.supplement?.total) ||
+                        toNumber(earnings?.supplement) ||
+                        (toNumber(earnings?.supplement?.consideration) + toNumber(earnings?.supplement?.retention));
+
+                    return {
+                        tips,
+                        wage,
+                        supplement,
+                    };
+                };
+
+                const recent = shifts.slice(-8);
+                const earningsBars = recent.map((shift) => extractTotals(shift.data.earnings || {}));
+                const barLabels = recent.map((shift) =>
+                    new Date(shift.data.date).toLocaleDateString()
+                );
 
                 barChartRef.current = new Chart(ctx, {
                     type: 'bar',
@@ -2194,17 +2232,17 @@ function serializeShiftForRow(shift) {
                         datasets: [
                             {
                                 label: 'Tips',
-                                data: earningsBars.map((earn) => earn.tips || 0),
+                                data: earningsBars.map((earn) => earn.tips),
                                 backgroundColor: 'rgba(34, 211, 238, 0.6)',
                             },
                             {
                                 label: 'Wage',
-                                data: earningsBars.map((earn) => earn.wage || 0),
+                                data: earningsBars.map((earn) => earn.wage),
                                 backgroundColor: 'rgba(192, 132, 252, 0.6)',
                             },
                             {
-                                label: 'Other',
-                                data: earningsBars.map((earn) => (earn.total || 0) - (earn.tips || 0) - (earn.wage || 0)),
+                                label: 'Supplement',
+                                data: earningsBars.map((earn) => earn.supplement),
                                 backgroundColor: 'rgba(74, 222, 128, 0.6)',
                             },
                         ],
@@ -2411,11 +2449,13 @@ function serializeShiftForRow(shift) {
 
         const SHIFT_FORM_PAGE_DEFS = [
             { key: 'overview', label: 'Overview', icon: 'fa-chart-simple' },
+            { key: 'tips', label: 'Tips', icon: 'fa-coins' },
+            { key: 'wage', label: 'Wage', icon: 'fa-money-bill-wave' },
+            { key: 'supplement', label: 'Supplement', icon: 'fa-gift' },
             { key: 'timings', label: 'Timings', icon: 'fa-clock' },
             { key: 'cuts', label: 'Cuts', icon: 'fa-layer-group' },
             { key: 'crew', label: 'Crew', icon: 'fa-people-group' },
             { key: 'parties', label: 'Parties', icon: 'fa-martini-glass-citrus' },
-            { key: 'enhancements', label: 'Enhancements', icon: 'fa-sliders' },
             { key: 'drinking', label: 'Drinks', icon: 'fa-wine-glass' },
         ];
 
@@ -2460,18 +2500,32 @@ function serializeShiftForRow(shift) {
                 players: [],
                 playerCountOverride: '',
             },
-            overtime: '',
             consideration: { items: [], net: 0 },
-            swindle: { total: 0, movements: [], net: {} },
+            supplement: { retention: '' },
             drinking: { items: [], totalSBE: 0 },
             earnings: {
-                tips: 0,
-                wage: 0,
-                overtime: 0,
-                chump: 0,
-                consideration: 0,
-                swindle: 0,
-                total: 0,
+                tips: {
+                    tipOut: '',
+                    chumpChange: '',
+                    total: '',
+                },
+                wage: {
+                    base: '',
+                    differential: {
+                        managerDifferential: '',
+                        shiftDifferential: '',
+                        trainingDifferential: '',
+                        total: '',
+                    },
+                    overtime: '',
+                    total: '',
+                },
+                supplement: {
+                    consideration: '',
+                    retention: '',
+                    total: '',
+                },
+                total: '',
             },
             summary: {
                 earnings: 0,
@@ -3053,6 +3107,93 @@ function serializeShiftForRow(shift) {
             return result;
         }
 
+        const toInputString = (value) => {
+            if (value === null || value === undefined) return '';
+            if (typeof value === 'string') return value;
+            if (typeof value === 'number') {
+                if (Number.isNaN(value)) return '';
+                return value.toString();
+            }
+            if (typeof value === 'boolean') return value ? '1' : '0';
+            return '';
+        };
+
+        function normalizeEarningsState(rawEarnings = {}) {
+            const template = JSON.parse(JSON.stringify(DEFAULT_SHIFT_TEMPLATE.earnings));
+
+            const tipsSource =
+                rawEarnings && typeof rawEarnings.tips === 'object' && !Array.isArray(rawEarnings.tips)
+                    ? rawEarnings.tips
+                    : rawEarnings;
+
+            template.tips.tipOut = toInputString(
+                tipsSource.tipOut ??
+                    tipsSource.base ??
+                    tipsSource.total ??
+                    tipsSource.amount ??
+                    rawEarnings.tips ??
+                    rawEarnings.tipOut ??
+                    ''
+            );
+            template.tips.chumpChange = toInputString(
+                tipsSource.chumpChange ?? tipsSource.chump ?? rawEarnings.chump ?? ''
+            );
+            template.tips.total = toInputString(tipsSource.total ?? rawEarnings.totalTips ?? rawEarnings.tipsTotal ?? '');
+
+            const wageSource =
+                rawEarnings && typeof rawEarnings.wage === 'object' && !Array.isArray(rawEarnings.wage)
+                    ? rawEarnings.wage
+                    : rawEarnings;
+
+            template.wage.base = toInputString(wageSource.base ?? rawEarnings.wage ?? '');
+            template.wage.total = toInputString(wageSource.total ?? rawEarnings.wageTotal ?? rawEarnings.wage ?? '');
+
+            const differentialSource =
+                wageSource && typeof wageSource.differential === 'object'
+                    ? wageSource.differential
+                    : wageSource.differentials || {};
+
+            template.wage.differential.managerDifferential = toInputString(
+                differentialSource.managerDifferential ??
+                    differentialSource.manager ??
+                    rawEarnings.managerDifferential ??
+                    ''
+            );
+            template.wage.differential.shiftDifferential = toInputString(
+                differentialSource.shiftDifferential ??
+                    differentialSource.shift ??
+                    rawEarnings.shiftDifferential ??
+                    ''
+            );
+            template.wage.differential.trainingDifferential = toInputString(
+                differentialSource.trainingDifferential ??
+                    differentialSource.training ??
+                    rawEarnings.trainingDifferential ??
+                    ''
+            );
+            template.wage.differential.total = toInputString(
+                differentialSource.total ?? rawEarnings.wageDifferentialTotal ?? ''
+            );
+            template.wage.overtime = toInputString(wageSource.overtime ?? rawEarnings.overtime ?? '');
+
+            const supplementSource =
+                rawEarnings && typeof rawEarnings.supplement === 'object' && !Array.isArray(rawEarnings.supplement)
+                    ? rawEarnings.supplement
+                    : rawEarnings;
+
+            template.supplement.consideration = toInputString(
+                supplementSource.consideration ?? rawEarnings.consideration ?? ''
+            );
+            template.supplement.retention = toInputString(
+                supplementSource.retention ?? rawEarnings.retention ?? ''
+            );
+            template.supplement.total = toInputString(supplementSource.total ?? rawEarnings.supplementTotal ?? '');
+
+            template.total = toInputString(rawEarnings.total ?? rawEarnings.grandTotal ?? '');
+
+            return template;
+        }
+
         function normalizeShiftPayload(shift) {
             if (!shift) return null;
             const cloned = JSON.parse(JSON.stringify(shift));
@@ -3069,6 +3210,11 @@ function serializeShiftForRow(shift) {
             cloned.wage.clock.manualStart = Boolean(cloned.wage.clock.manualStart);
             cloned.wage.clock.manualEnd = Boolean(cloned.wage.clock.manualEnd);
             cloned.wage.autoTotal = cloned.wage.autoTotal === undefined ? true : Boolean(cloned.wage.autoTotal);
+            cloned.wage.differential = cloned.wage.differential || {};
+            cloned.wage.differential.managerDifferential = toInputString(cloned.wage.differential.managerDifferential);
+            cloned.wage.differential.shiftDifferential = toInputString(cloned.wage.differential.shiftDifferential);
+            cloned.wage.differential.trainingDifferential = toInputString(cloned.wage.differential.trainingDifferential);
+            cloned.wage.differential.total = toInputString(cloned.wage.differential.total);
 
             if (!cloned.tips) cloned.tips = { _total: '' };
             if (cloned.tips._total === 0) cloned.tips._total = '';
@@ -3094,7 +3240,14 @@ function serializeShiftForRow(shift) {
                     : [];
             }
 
-            cloned.overtime = cloned.overtime !== undefined ? String(cloned.overtime) : '';
+            cloned.consideration = cloned.consideration || { items: [], net: 0 };
+            cloned.consideration.net =
+                cloned.consideration.net !== undefined && cloned.consideration.net !== null
+                    ? parseFloat(cloned.consideration.net) || 0
+                    : 0;
+            cloned.supplement = cloned.supplement || { retention: '' };
+            cloned.supplement.retention = toInputString(cloned.supplement.retention);
+            cloned.earnings = normalizeEarningsState(cloned.earnings || {});
 
             if (!Array.isArray(cloned.drinking?.items)) {
                 cloned.drinking = cloned.drinking || {};
@@ -3202,11 +3355,6 @@ function serializeShiftForRow(shift) {
             );
             const [formData, setFormData] = useState(initialFormSnapshot);
             const [activePage, setActivePage] = useState(SHIFT_FORM_PAGE_DEFS[0].key);
-            const [sectionOpen, setSectionOpen] = useState({
-                wage: false,
-                overtime: false,
-                chump: false,
-            });
             const [timeDrafts, setTimeDrafts] = useState(() => buildInitialTimeDrafts(initialFormSnapshot));
             const [timeErrors, setTimeErrors] = useState({});
             const [shiftTypeMode, setShiftTypeMode] = useState(shift?.type ? 'manual' : 'auto');
@@ -3263,7 +3411,6 @@ function serializeShiftForRow(shift) {
                 setExpandedParties({});
                 setPartySnapshots({});
                 setExpandedCrewRows({});
-                setSectionOpen({ wage: false, overtime: false, chump: false });
                 setActivePage(SHIFT_FORM_PAGE_DEFS[0].key);
             }, [initialFormSnapshot]);
 
@@ -3504,6 +3651,133 @@ function serializeShiftForRow(shift) {
                 const numeric = typeof value === 'number' ? value : parseFloat(value);
                 if (Number.isNaN(numeric)) return fallback;
                 return numeric;
+            };
+
+            const computeConsiderationFromItems = (draft) => {
+                if (!Array.isArray(draft?.consideration?.items)) return 0;
+                return draft.consideration.items.reduce((sum, item) => {
+                    return sum + parseAmount(item?.amount, 0);
+                }, 0);
+            };
+
+            const computeEarningsBreakdown = (
+                draft,
+                {
+                    presetHours = null,
+                    presetWageTotal = null,
+                    presetTipsTotal = null,
+                } = {}
+            ) => {
+                if (!draft) {
+                    return JSON.parse(JSON.stringify(DEFAULT_SHIFT_TEMPLATE.earnings));
+                }
+
+                const hours =
+                    presetHours ??
+                    draft.time?.base?.hours ??
+                    calculateHoursBetween(draft.time?.base?.start, draft.time?.base?.end) ??
+                    0;
+
+                const tipOut = parseAmount(
+                    presetTipsTotal !== null ? presetTipsTotal : draft.tips?._total,
+                    0
+                );
+                const chumpChange = parseAmount(draft.earnings?.tips?.chumpChange, 0);
+                const tipsTotal = parseFloat((tipOut + chumpChange).toFixed(2));
+
+                const wageTotalInput =
+                    draft.wage?.total !== undefined && draft.wage?.total !== ''
+                        ? parseAmount(draft.wage.total, 0)
+                        : null;
+                const wageHours =
+                    draft.wage?.hours !== undefined && draft.wage?.hours !== ''
+                        ? parseAmount(draft.wage.hours, hours || 0)
+                        : hours || 0;
+                const wageBaseRate = parseAmount(draft.wage?.base, 0);
+                const wageBase =
+                    presetWageTotal !== null
+                        ? presetWageTotal
+                        : wageTotalInput !== null
+                            ? wageTotalInput
+                            : parseFloat((wageBaseRate * wageHours).toFixed(2));
+
+                const managerDifferential = parseAmount(
+                    draft.earnings?.wage?.differential?.managerDifferential,
+                    0
+                );
+                const shiftDifferential = parseAmount(
+                    draft.earnings?.wage?.differential?.shiftDifferential,
+                    0
+                );
+                const trainingDifferential = parseAmount(
+                    draft.earnings?.wage?.differential?.trainingDifferential,
+                    0
+                );
+                const wageDifferentialTotal = parseFloat(
+                    (managerDifferential + shiftDifferential + trainingDifferential).toFixed(2)
+                );
+
+                const overtime = parseAmount(
+                    draft.earnings?.wage?.overtime ??
+                        draft.earnings?.overtime ??
+                        draft.overtime ??
+                        0,
+                    0
+                );
+
+                const wageTotal = parseFloat((wageBase + wageDifferentialTotal + overtime).toFixed(2));
+
+                const considerationFromItems = computeConsiderationFromItems(draft);
+                const considerationInput = draft.earnings?.wage?.consideration; // legacy safety
+                const supplementConsiderationRaw =
+                    draft.earnings?.supplement?.consideration ??
+                    draft.earnings?.consideration ??
+                    considerationInput;
+
+                const supplementConsideration =
+                    supplementConsiderationRaw === '' || supplementConsiderationRaw === null || supplementConsiderationRaw === undefined
+                        ? considerationFromItems
+                        : parseAmount(supplementConsiderationRaw, considerationFromItems);
+
+                const retentionRaw =
+                    draft.earnings?.supplement?.retention ??
+                    draft.supplement?.retention ??
+                    draft.retention ??
+                    '';
+                const supplementRetention = parseAmount(retentionRaw, 0);
+
+                const supplementTotal = parseFloat(
+                    (supplementConsideration + supplementRetention).toFixed(2)
+                );
+
+                const overallTotal = parseFloat(
+                    (tipsTotal + wageTotal + supplementTotal).toFixed(2)
+                );
+
+                return {
+                    tips: {
+                        tipOut,
+                        chumpChange,
+                        total: tipsTotal,
+                    },
+                    wage: {
+                        base: wageBase,
+                        differential: {
+                            managerDifferential,
+                            shiftDifferential,
+                            trainingDifferential,
+                            total: wageDifferentialTotal,
+                        },
+                        overtime,
+                        total: wageTotal,
+                    },
+                    supplement: {
+                        consideration: supplementConsideration,
+                        retention: supplementRetention,
+                        total: supplementTotal,
+                    },
+                    total: overallTotal,
+                };
             };
 
             const matchCoworkerByName = (value) => {
@@ -3819,7 +4093,10 @@ function serializeShiftForRow(shift) {
                     const next = JSON.parse(JSON.stringify(prev));
                     const normalized = typeof value === 'string' ? value.replace(',', '.').trim() : value;
                     next.tips._total = normalized;
-                    next.earnings.tips = parseAmount(normalized);
+                    next.earnings = next.earnings || {};
+                    next.earnings.tips = next.earnings.tips || {};
+                    next.earnings.tips.tipOut = normalized;
+                    next.earnings.tips.total = next.earnings?.tips?.total || '';
                     if (!normalized) {
                         next.meta = next.meta || {};
                         next.meta.tipsPending = true;
@@ -4089,15 +4366,6 @@ function serializeShiftForRow(shift) {
                 return 'Select shift type';
             }, [shiftTypeMode, formData.type]);
 
-            const handleAddSwindleMovement = () => {
-                setFormData((prev) => {
-                    const next = JSON.parse(JSON.stringify(prev));
-                    next.swindle.movements = next.swindle.movements || [];
-                    next.swindle.movements.push({ from: '', to: '', amount: '', note: '' });
-                    return next;
-                });
-            };
-
             const handleAddConsideration = () => {
                 setFormData((prev) => {
                     const next = JSON.parse(JSON.stringify(prev));
@@ -4121,43 +4389,89 @@ function serializeShiftForRow(shift) {
                 e.preventDefault();
                 setFormData((prev) => {
                     const next = JSON.parse(JSON.stringify(prev));
-                    const hours = next.time.base.hours || calculateHoursBetween(next.time.base.start, next.time.base.end);
-                    const tipsTotal = parseAmount(next.tips._total);
-                    const wageBase = parseAmount(next.wage.base);
-                    const wageHours = next.wage.hours !== undefined && next.wage.hours !== '' ? parseAmount(next.wage.hours) : hours || 0;
-                    const wageTotal = next.wage.total !== undefined && next.wage.total !== '' ? parseAmount(next.wage.total) : parseFloat((wageBase * wageHours).toFixed(2));
-                    const overtime = parseAmount(next.earnings.overtime || next.overtime);
-                    const chump = parseAmount(next.earnings.chump);
-                    const consideration = parseAmount(next.earnings.consideration || next.consideration.net);
-                    const swindle = parseAmount(next.earnings.swindle || next.swindle.total);
+                    const hours =
+                        next.time.base.hours ||
+                        calculateHoursBetween(next.time.base.start, next.time.base.end) ||
+                        0;
 
-                    const totalEarnings = parseFloat((tipsTotal + wageTotal + overtime + chump + consideration + swindle).toFixed(2));
-                    const hourlyRate = hours > 0 ? parseFloat((totalEarnings / hours).toFixed(2)) : 0;
+                    const earningsBreakdown = computeEarningsBreakdown(next, {
+                        presetHours: hours,
+                    });
+
+                    const hourlyRate =
+                        hours > 0 ? parseFloat((earningsBreakdown.total / hours).toFixed(2)) : 0;
 
                     next.time.base.hours = hours;
-                    next.wage.hours = next.wage.hours !== undefined && next.wage.hours !== '' ? next.wage.hours : hours;
-                    next.wage.total = wageTotal;
+                    next.wage.hours =
+                        next.wage.hours !== undefined && next.wage.hours !== ''
+                            ? next.wage.hours
+                            : hours;
+                    if (
+                        next.wage.total === undefined ||
+                        next.wage.total === '' ||
+                        next.wage.autoTotal
+                    ) {
+                        next.wage.total = earningsBreakdown.wage.base.toFixed(2);
+                    }
                     next.summary.hours = hours;
-
-                    next.earnings = {
-                        tips: tipsTotal,
-                        wage: wageTotal,
-                        overtime,
-                        chump,
-                        consideration,
-                        swindle,
-                        total: totalEarnings,
-                    };
-
-                    next.summary.earnings = totalEarnings;
+                    next.summary.earnings = earningsBreakdown.total;
                     next.summary.hourly = hourlyRate;
                     next.summary.tips.actual = {
-                        total: tipsTotal,
-                        perHour: hours > 0 ? parseFloat((tipsTotal / hours).toFixed(2)) : 0,
+                        total: earningsBreakdown.tips.total,
+                        perHour:
+                            hours > 0
+                                ? parseFloat((earningsBreakdown.tips.total / hours).toFixed(2))
+                                : 0,
+                    };
+
+                    next.consideration = next.consideration || { items: [], net: 0 };
+                    next.consideration.net = earningsBreakdown.supplement.consideration;
+                    next.supplement = next.supplement || {};
+                    next.supplement.retention = earningsBreakdown.supplement.retention;
+
+                    next.earnings = {
+                        ...next.earnings,
+                        tips: {
+                            ...next.earnings?.tips,
+                            tipOut: next.tips?._total ?? '',
+                            chumpChange: next.earnings?.tips?.chumpChange ?? '',
+                            total: earningsBreakdown.tips.total.toFixed(2),
+                        },
+                        wage: {
+                            ...next.earnings?.wage,
+                            base: earningsBreakdown.wage.base.toFixed(2),
+                            differential: {
+                                ...next.earnings?.wage?.differential,
+                                managerDifferential:
+                                    next.earnings?.wage?.differential?.managerDifferential ?? '',
+                                shiftDifferential:
+                                    next.earnings?.wage?.differential?.shiftDifferential ?? '',
+                                trainingDifferential:
+                                    next.earnings?.wage?.differential?.trainingDifferential ?? '',
+                                total: earningsBreakdown.wage.differential.total.toFixed(2),
+                            },
+                            overtime:
+                                next.earnings?.wage?.overtime ??
+                                next.earnings?.overtime ??
+                                earningsBreakdown.wage.overtime.toFixed(2),
+                            total: earningsBreakdown.wage.total.toFixed(2),
+                        },
+                        supplement: {
+                            ...next.earnings?.supplement,
+                            consideration:
+                                next.earnings?.supplement?.consideration ??
+                                earningsBreakdown.supplement.consideration.toFixed(2),
+                            retention:
+                                next.earnings?.supplement?.retention ??
+                                earningsBreakdown.supplement.retention.toFixed(2),
+                            total: earningsBreakdown.supplement.total.toFixed(2),
+                        },
+                        total: earningsBreakdown.total.toFixed(2),
                     };
 
                     const payload = {
                         ...next,
+                        earnings: earningsBreakdown,
                         id: next.id || `shift_${(next.date || '').replace(/-/g, '')}`,
                     };
                     onSave(payload);
@@ -4169,7 +4483,10 @@ function serializeShiftForRow(shift) {
                 });
             };
 
-            const calculatedHours = formData.time.base.hours || calculateHoursBetween(formData.time.base.start, formData.time.base.end);
+            const calculatedHours =
+                formData.time.base.hours ||
+                calculateHoursBetween(formData.time.base.start, formData.time.base.end) ||
+                0;
             const tipsTotalValue = parseAmount(formData.tips._total);
             const wageBaseValue = parseAmount(formData.wage.base);
             const wageHoursValue =
@@ -4180,14 +4497,14 @@ function serializeShiftForRow(shift) {
                 formData.wage.total !== undefined && formData.wage.total !== ''
                     ? parseAmount(formData.wage.total)
                     : parseFloat((wageBaseValue * wageHoursValue).toFixed(2));
-            const overtimeTotal = parseAmount(formData.earnings.overtime);
-            const chumpTotal = parseAmount(formData.earnings.chump);
-            const considerationTotal = parseAmount(formData.earnings.consideration ?? formData.consideration?.net);
-            const swindleTotal = parseAmount(formData.earnings.swindle ?? formData.swindle?.total);
-            const displayedEarnings =
-                formData.earnings.total !== undefined && formData.earnings.total !== ''
-                    ? parseAmount(formData.earnings.total)
-                    : parseFloat((tipsTotalValue + wageTotal + overtimeTotal + chumpTotal + considerationTotal + swindleTotal).toFixed(2));
+
+            const earningsSnapshot = computeEarningsBreakdown(formData, {
+                presetHours: calculatedHours,
+                presetWageTotal: wageTotal,
+                presetTipsTotal: tipsTotalValue,
+            });
+
+            const displayedEarnings = earningsSnapshot.total;
             const displayedHourly =
                 formData.summary.hourly !== undefined && formData.summary.hourly !== ''
                     ? parseAmount(formData.summary.hourly)
@@ -4195,15 +4512,45 @@ function serializeShiftForRow(shift) {
                         ? parseFloat((displayedEarnings / calculatedHours).toFixed(2))
                         : 0;
             const tipsPerHour =
-                formData.summary.tips?.actual?.perHour !== undefined && formData.summary.tips.actual.perHour !== ''
+                formData.summary.tips?.actual?.perHour !== undefined &&
+                formData.summary.tips.actual.perHour !== ''
                     ? parseAmount(formData.summary.tips.actual.perHour)
                     : calculatedHours > 0
-                        ? parseFloat((tipsTotalValue / calculatedHours).toFixed(2))
+                        ? parseFloat((earningsSnapshot.tips.total / calculatedHours).toFixed(2))
                         : 0;
             const wageClockHours =
                 formData.wage?.clock?.start && formData.wage?.clock?.end
                     ? calculateHoursBetween(formData.wage.clock.start, formData.wage.clock.end)
                     : null;
+
+            const chumpChangeValue = parseAmount(formData.earnings?.tips?.chumpChange);
+            const managerDifferentialValue = parseAmount(
+                formData.earnings?.wage?.differential?.managerDifferential
+            );
+            const shiftDifferentialValue = parseAmount(
+                formData.earnings?.wage?.differential?.shiftDifferential
+            );
+            const trainingDifferentialValue = parseAmount(
+                formData.earnings?.wage?.differential?.trainingDifferential
+            );
+            const overtimeInputValue = parseAmount(
+                formData.earnings?.wage?.overtime ?? formData.earnings?.overtime
+            );
+            const considerationAuto = computeConsiderationFromItems(formData);
+            const considerationOverrideRaw = formData.earnings?.supplement?.consideration;
+            const considerationValue =
+                considerationOverrideRaw === '' ||
+                considerationOverrideRaw === null ||
+                considerationOverrideRaw === undefined
+                    ? considerationAuto
+                    : parseAmount(considerationOverrideRaw, considerationAuto);
+            const retentionValue = parseAmount(
+                formData.earnings?.supplement?.retention ?? formData.supplement?.retention
+            );
+            const toFixed = (value) => {
+                const amount = Number(value || 0);
+                return Number.isFinite(amount) ? amount.toFixed(2) : '0.00';
+            };
 
             const shiftTypeMeta = SHIFT_TYPE_META[formData.type] || SHIFT_TYPE_META.default;
             const headerIcon = shiftTypeMeta.icon || (shiftTypeMode === 'auto' ? 'fa-circle-half-stroke' : 'fa-circle-question');
@@ -4238,7 +4585,42 @@ function serializeShiftForRow(shift) {
             const coworkerCount = bartenderCount + serverCount + supportCount;
             const chumpStatus = formData.chump?.played ? (formData.chump.winner ? 'recorded' : 'pending') : 'not-played';
 
+            const toCurrencyMetric = (value) => {
+                const amount = Number(value || 0);
+                if (!Number.isFinite(amount) || amount === 0) return '—';
+                return `$${amount.toFixed(2)}`;
+            };
+
             const quickPanels = [
+                {
+                    key: 'tips',
+                    page: 'tips',
+                    icon: 'fa-coins',
+                    label: 'Tips',
+                    metric: toCurrencyMetric(earningsSnapshot.tips.total),
+                    status: earningsSnapshot.tips.total > 0 ? 'ok' : formData.meta?.tipsPending ? 'pending' : 'none',
+                },
+                {
+                    key: 'wage',
+                    page: 'wage',
+                    icon: 'fa-money-bill-wave',
+                    label: 'Wage',
+                    metric: toCurrencyMetric(earningsSnapshot.wage.total),
+                    status: earningsSnapshot.wage.total > 0 ? 'ok' : wageHoursValue > 0 ? 'pending' : 'none',
+                },
+                {
+                    key: 'supplement',
+                    page: 'supplement',
+                    icon: 'fa-gift',
+                    label: 'Supplement',
+                    metric: toCurrencyMetric(earningsSnapshot.supplement.total),
+                    status:
+                        earningsSnapshot.supplement.total > 0 ||
+                        formData.consideration?.items?.length ||
+                        parseAmount(formData.earnings?.supplement?.retention)
+                            ? 'ok'
+                            : 'none',
+                },
                 {
                     key: 'cuts',
                     page: 'cuts',
@@ -4262,14 +4644,6 @@ function serializeShiftForRow(shift) {
                     label: 'Crew',
                     metric: coworkerCount,
                     status: coworkerCount > 0 ? 'ok' : 'pending',
-                },
-                {
-                    key: 'enhancements',
-                    page: 'enhancements',
-                    icon: 'fa-sliders',
-                    label: 'Enhancements',
-                    metric: '',
-                    status: (formData.overtime || formData.consideration.items?.length || formData.swindle.movements?.length) ? 'ok' : 'none',
                 },
                 {
                     key: 'drinking',
@@ -4485,7 +4859,7 @@ function serializeShiftForRow(shift) {
                                 <div className="glass rounded-2xl p-4 border border-slate-800/60">
                                     <p className="text-xs uppercase tracking-widest text-slate-500">Total Earnings</p>
                                     <p className="mt-2 text-3xl font-semibold text-cyan-300">${displayedEarnings.toFixed(2)}</p>
-                                    <p className="text-xs text-slate-500 mt-1">Includes tips, wage, adjustments</p>
+                                <p className="text-xs text-slate-500 mt-1">Includes tips, wage, supplements</p>
                                 </div>
                                 <div className="glass rounded-2xl p-4 border border-slate-800/60">
                                     <p className="text-xs uppercase tracking-widest text-slate-500">Hours</p>
@@ -4511,14 +4885,14 @@ function serializeShiftForRow(shift) {
                                             {chumpStatus === 'recorded' ? 'Logged' : chumpStatus === 'pending' ? 'Result Pending' : 'Not Played'}
                                         </span>
                                     </div>
-                                      <button
-                                          type="button"
-                                          onClick={() => setActivePage('enhancements')}
-                                          className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
-                                      >
-                                          Manage Enhancements
-                                          <i className="fas fa-arrow-right"></i>
-                                      </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setActivePage('tips')}
+                                    className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
+                                >
+                                    Manage Tips
+                                    <i className="fas fa-arrow-right"></i>
+                                </button>
                                 </div>
                             </div>
 
@@ -5737,143 +6111,267 @@ function serializeShiftForRow(shift) {
                                 </div>
                             )}
 
-                        {activePage === 'enhancements' && (
-                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
-                                        <div className="flex items-center justify-between">
-                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
-                                                <i className="fas fa-sliders text-slate-400"></i>
-                                                Enhancements &amp; Adjustments
-                                            </h3>
-                                            <div className="text-xs text-slate-500">Group overtime, consideration, swindle</div>
+                        {activePage === 'tips' && (
+                            <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
+                                        <p className="text-xs uppercase tracking-wider text-slate-500">Tip Out</p>
+                                        <p className="mt-3 text-3xl font-semibold text-cyan-300">${toFixed(tipsTotalValue)}</p>
+                                        <p className="text-xs text-slate-500 mt-1">Edit from the overview page.</p>
+                                        <button
+                                            type="button"
+                                            onClick={() => setActivePage('overview')}
+                                            className="text-xs text-cyan-200 hover:text-white flex items-center gap-2 mt-3"
+                                        >
+                                            Adjust Overview
+                                            <i className="fas fa-arrow-right"></i>
+                                        </button>
+                                    </div>
+                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
+                                        <label className="text-xs uppercase tracking-wider text-slate-500">Chump Change</label>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            value={formData.earnings?.tips?.chumpChange ?? ''}
+                                            onChange={(e) => updateFormPath('earnings.tips.chumpChange', e.target.value)}
+                                            className="mt-3 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                            placeholder="0.00"
+                                        />
+                                        <p className="text-xs text-slate-500 mt-2">
+                                            Currently adds ${toFixed(chumpChangeValue)} to reported tips.
+                                        </p>
+                                    </div>
+                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
+                                        <p className="text-xs uppercase tracking-wider text-slate-500">Tips Summary</p>
+                                        <div className="mt-3 space-y-2 text-sm text-slate-300">
+                                            <div className="flex justify-between">
+                                                <span>Tip Out</span>
+                                                <span className="font-semibold text-cyan-300">${toFixed(tipsTotalValue)}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>Chump Change</span>
+                                                <span className="font-semibold text-fuchsia-300">${toFixed(chumpChangeValue)}</span>
+                                            </div>
+                                            <div className="flex justify-between border-t border-slate-800/50 pt-2">
+                                                <span>Total Tips</span>
+                                                <span className="font-bold text-emerald-300">${toFixed(earningsSnapshot.tips.total)}</span>
+                                            </div>
                                         </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    </div>
+                                </div>
+                                <div className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
+                                    <div className="flex items-center justify-between">
+                                        <p className="text-xs uppercase tracking-wider text-slate-500">Chump Log</p>
+                                        <div className="flex items-center gap-2">
+                                            <label className="text-xs text-slate-500">Played?</label>
+                                            <input
+                                                type="checkbox"
+                                                checked={formData.chump?.played || false}
+                                                onChange={(e) => updateFormPath('chump.played', e.target.checked)}
+                                                className="accent-cyan-500"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            value={formData.chump?.amount?.total || ''}
+                                            onChange={(e) => updateFormPath('chump.amount.total', e.target.value)}
+                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                            placeholder="Pot total"
+                                        />
+                                        <input
+                                            type="text"
+                                            value={formData.chump?.winner || ''}
+                                            onChange={(e) => updateFormPath('chump.winner', e.target.value)}
+                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                            placeholder="Winner"
+                                        />
+                                        <select
+                                            value={formData.chump?.outcome || ''}
+                                            onChange={(e) => updateFormPath('chump.outcome', e.target.value)}
+                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                        >
+                                            <option value="">Outcome</option>
+                                            <option value="win">Win</option>
+                                            <option value="loss">Loss</option>
+                                            <option value="push">Push</option>
+                                        </select>
+                                    </div>
+                                    <textarea
+                                        value={formData.chump?.notes || ''}
+                                        onChange={(e) => updateFormPath('chump.notes', e.target.value)}
+                                        className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
+                                        placeholder="Notes"
+                                    ></textarea>
+                                </div>
+                            </div>
+                        )}
+
+                        {activePage === 'wage' && (
+                            <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
+                                <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4">
+                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-3">
+                                        <p className="text-xs uppercase tracking-wider text-slate-500">Wage Clock</p>
+                                        <div>
+                                            <label className="text-xs uppercase text-slate-500">Base Rate</label>
+                                            <input
+                                                type="text"
+                                                value={formData.wage.base ?? ''}
+                                                onChange={(e) => updateFormPath('wage.base', e.target.value)}
+                                                className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="5.00"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs uppercase text-slate-500">Hours</label>
+                                            <input
+                                                type="text"
+                                                value={formData.wage.hours ?? ''}
+                                                onChange={(e) => updateFormPath('wage.hours', e.target.value)}
+                                                className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder="6"
+                                            />
+                                        </div>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                            <div>
+                                                <label className="text-xs uppercase text-slate-500">Clock Start</label>
+                                                <div className="mt-1 space-y-1">
+                                                    <input
+                                                        type="text"
+                                                        inputMode="numeric"
+                                                        value={getTimeDraftValue('wage.clock.start')}
+                                                        onChange={(e) => handleTimeDraftChange('wage.clock.start', e.target.value)}
+                                                        onBlur={(e) => commitTimeValue('wage.clock.start', e.target.value, { mode: 'start' })}
+                                                        onFocus={(e) => e.target.select()}
+                                                        className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="10"
+                                                    />
+                                                    {timeErrors['wage.clock.start'] && (
+                                                        <p className="text-xs text-amber-400">{timeErrors['wage.clock.start']}</p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <label className="text-xs uppercase text-slate-500">Clock End</label>
+                                                <div className="mt-1 space-y-1">
+                                                    <input
+                                                        type="text"
+                                                        inputMode="numeric"
+                                                        value={getTimeDraftValue('wage.clock.end')}
+                                                        onChange={(e) => handleTimeDraftChange('wage.clock.end', e.target.value)}
+                                                        onBlur={(e) =>
+                                                            commitTimeValue('wage.clock.end', e.target.value, {
+                                                                mode: 'end',
+                                                                referenceStart: formData.wage?.clock?.start,
+                                                            })
+                                                        }
+                                                        onFocus={(e) => e.target.select()}
+                                                        className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="6p"
+                                                    />
+                                                    {timeErrors['wage.clock.end'] && (
+                                                        <p className="text-xs text-amber-400">{timeErrors['wage.clock.end']}</p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        {wageClockHours != null && (
+                                            <p className="text-xs text-slate-500">
+                                                Clocked {wageClockHours.toFixed(2)} hours
+                                            </p>
+                                        )}
+                                        <p className="text-xs text-slate-500">
+                                            Base total ${toFixed(wageTotal)}
+                                        </p>
+                                    </div>
+                                    <div className="space-y-4">
                                         <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
-                                            <p className="text-xs uppercase tracking-wider text-slate-500">Wage</p>
-                                            <div className="mt-3 space-y-3">
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">Base Rate</label>
+                                            <p className="text-xs uppercase tracking-wider text-slate-500">Differential</p>
+                                            <div className="mt-3 space-y-2">
+                                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                                                     <input
-                                                        type="text"
-                                                        value={formData.wage.base ?? ''}
-                                                        onChange={(e) => updateFormPath('wage.base', e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="5.00"
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={formData.earnings?.wage?.differential?.managerDifferential ?? ''}
+                                                        onChange={(e) => updateFormPath('earnings.wage.differential.managerDifferential', e.target.value)}
+                                                        className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="Manager"
+                                                    />
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={formData.earnings?.wage?.differential?.shiftDifferential ?? ''}
+                                                        onChange={(e) => updateFormPath('earnings.wage.differential.shiftDifferential', e.target.value)}
+                                                        className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="Shift"
+                                                    />
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={formData.earnings?.wage?.differential?.trainingDifferential ?? ''}
+                                                        onChange={(e) => updateFormPath('earnings.wage.differential.trainingDifferential', e.target.value)}
+                                                        className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                        placeholder="Training"
                                                     />
                                                 </div>
-                                                <div>
-                                                    <label className="text-xs uppercase text-slate-500">Hours</label>
-                                                    <input
-                                                        type="text"
-                                                        value={formData.wage.hours ?? ''}
-                                                        onChange={(e) => updateFormPath('wage.hours', e.target.value)}
-                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="6"
-                                                    />
-                                                </div>
-                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                    <div>
-                                                        <label className="text-xs uppercase text-slate-500">Clock Start</label>
-                                                        <div className="mt-1 space-y-1">
-                                                            <input
-                                                                type="text"
-                                                                inputMode="numeric"
-                                                                value={getTimeDraftValue('wage.clock.start')}
-                                                                onChange={(e) => handleTimeDraftChange('wage.clock.start', e.target.value)}
-                                                                onBlur={(e) => commitTimeValue('wage.clock.start', e.target.value, { mode: 'start' })}
-                                                                onFocus={(e) => e.target.select()}
-                                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                placeholder="10"
-                                                            />
-                                                            {timeErrors['wage.clock.start'] && (
-                                                                <p className="text-xs text-amber-400">{timeErrors['wage.clock.start']}</p>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-xs uppercase text-slate-500">Clock End</label>
-                                                        <div className="mt-1 space-y-1">
-                                                            <input
-                                                                type="text"
-                                                                inputMode="numeric"
-                                                                value={getTimeDraftValue('wage.clock.end')}
-                                                                onChange={(e) => handleTimeDraftChange('wage.clock.end', e.target.value)}
-                                                                onBlur={(e) =>
-                                                                    commitTimeValue('wage.clock.end', e.target.value, {
-                                                                        mode: 'end',
-                                                                        referenceStart: formData.wage?.clock?.start,
-                                                                    })
-                                                                }
-                                                                onFocus={(e) => e.target.select()}
-                                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                placeholder="6p"
-                                                            />
-                                                            {timeErrors['wage.clock.end'] && (
-                                                                <p className="text-xs text-amber-400">{timeErrors['wage.clock.end']}</p>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                {wageClockHours != null && (
-                                                    <p className="text-xs text-slate-500">
-                                                        Clocked {wageClockHours.toFixed(2)} hours
-                                                    </p>
-                                                )}
-                                                <p className="text-xs text-slate-500">Total ${wageTotal.toFixed(2)}</p>
+                                                <p className="text-xs text-slate-500">
+                                                    Combined ${toFixed(earningsSnapshot.wage.differential.total)}
+                                                </p>
                                             </div>
                                         </div>
                                         <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
                                             <p className="text-xs uppercase tracking-wider text-slate-500">Overtime</p>
                                             <input
-                                                type="text"
-                                                value={formData.earnings.overtime ?? ''}
-                                                onChange={(e) => updateFormPath('earnings.overtime', e.target.value)}
+                                                type="number"
+                                                step="0.01"
+                                                value={formData.earnings?.wage?.overtime ?? formData.earnings?.overtime ?? ''}
+                                                onChange={(e) => updateFormPath('earnings.wage.overtime', e.target.value)}
                                                 className="mt-3 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
                                                 placeholder="0.00"
                                             />
+                                            <p className="text-xs text-slate-500 mt-2">
+                                                Currently ${toFixed(overtimeInputValue)}
+                                            </p>
                                         </div>
                                         <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-xs uppercase tracking-wider text-slate-500">Chump</p>
-                                                <div className="flex items-center gap-2">
-                                                    <label className="text-xs text-slate-500">Played?</label>
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={formData.chump?.played || false}
-                                                        onChange={(e) => updateFormPath('chump.played', e.target.checked)}
-                                                        className="accent-cyan-500"
-                                                    />
+                                            <p className="text-xs uppercase tracking-wider text-slate-500">Wage Summary</p>
+                                            <div className="mt-3 space-y-2 text-sm text-slate-300">
+                                                <div className="flex justify-between">
+                                                    <span>Base</span>
+                                                    <span className="font-semibold text-emerald-300">${toFixed(earningsSnapshot.wage.base)}</span>
                                                 </div>
-                                            </div>
-                                            <div className="mt-3 space-y-2">
-                                                <input
-                                                    type="number"
-                                                    step="0.01"
-                                                    value={formData.chump?.amount?.total || ''}
-                                                    onChange={(e) => updateFormPath('chump.amount.total', e.target.value)}
-                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Pot total"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    value={formData.chump?.winner || ''}
-                                                    onChange={(e) => updateFormPath('chump.winner', e.target.value)}
-                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Winner"
-                                                />
-                                                <textarea
-                                                    value={formData.chump?.notes || ''}
-                                                    onChange={(e) => updateFormPath('chump.notes', e.target.value)}
-                                                    className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
-                                                    placeholder="Notes"
-                                                ></textarea>
+                                                <div className="flex justify-between">
+                                                    <span>Differential</span>
+                                                    <span className="font-semibold text-indigo-300">${toFixed(earningsSnapshot.wage.differential.total)}</span>
+                                                </div>
+                                                <div className="flex justify-between">
+                                                    <span>Overtime</span>
+                                                    <span className="font-semibold text-amber-300">${toFixed(earningsSnapshot.wage.overtime)}</span>
+                                                </div>
+                                                <div className="flex justify-between border-t border-slate-800/50 pt-2">
+                                                    <span>Total Wage</span>
+                                                    <span className="font-bold text-cyan-300">${toFixed(earningsSnapshot.wage.total)}</span>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
+                                </div>
+                            </div>
+                        )}
 
+                        {activePage === 'supplement' && (
+                            <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
+                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                                     <div className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
                                         <div className="flex items-center justify-between">
                                             <h4 className="text-sm font-semibold text-slate-200">Consideration</h4>
-                                            <button type="button" onClick={handleAddConsideration} className="text-xs text-cyan-200 hover:text-white flex items-center gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={handleAddConsideration}
+                                                className="text-xs text-cyan-200 hover:text-white flex items-center gap-2"
+                                            >
                                                 <i className="fas fa-plus"></i>
                                                 Item
                                             </button>
@@ -5904,52 +6402,55 @@ function serializeShiftForRow(shift) {
                                                 />
                                             </div>
                                         ))}
-                                    </div>
-
-                                    <div className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
-                                        <div className="flex items-center justify-between">
-                                            <h4 className="text-sm font-semibold text-slate-200">Swindle Movements</h4>
-                                            <button type="button" onClick={handleAddSwindleMovement} className="text-xs text-cyan-200 hover:text-white flex items-center gap-2">
-                                                <i className="fas fa-plus"></i>
-                                                Movement
-                                            </button>
+                                        <div className="pt-3 border-t border-slate-800/60 space-y-2">
+                                            <label className="text-xs uppercase tracking-wider text-slate-500">Net Consideration</label>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                value={formData.earnings?.supplement?.consideration ?? ''}
+                                                onChange={(e) => updateFormPath('earnings.supplement.consideration', e.target.value)}
+                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                placeholder={toFixed(considerationAuto)}
+                                            />
+                                            <p className="text-xs text-slate-500">
+                                                Auto-sum ${toFixed(considerationAuto)}
+                                            </p>
                                         </div>
-                                        {(formData.swindle?.movements || []).map((move, idx) => (
-                                            <div key={idx} className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                                                <input
-                                                    type="text"
-                                                    value={move.from || ''}
-                                                    onChange={(e) => updateFormPath(`swindle.movements.${idx}.from`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="From"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    value={move.to || ''}
-                                                    onChange={(e) => updateFormPath(`swindle.movements.${idx}.to`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="To"
-                                                />
-                                                <input
-                                                    type="number"
-                                                    step="0.01"
-                                                    value={move.amount || ''}
-                                                    onChange={(e) => updateFormPath(`swindle.movements.${idx}.amount`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Amount"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    value={move.note || ''}
-                                                    onChange={(e) => updateFormPath(`swindle.movements.${idx}.note`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Note"
-                                                />
-                                            </div>
-                                        ))}
+                                    </div>
+                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-3">
+                                        <p className="text-xs uppercase tracking-wider text-slate-500">Retention Bonus</p>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            value={formData.earnings?.supplement?.retention ?? formData.supplement?.retention ?? ''}
+                                            onChange={(e) => updateFormPath('earnings.supplement.retention', e.target.value)}
+                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                            placeholder="0.00"
+                                        />
+                                        <p className="text-xs text-slate-500">
+                                            Logged retention ${toFixed(retentionValue)}
+                                        </p>
                                     </div>
                                 </div>
-                            )}
+                                <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
+                                    <p className="text-xs uppercase tracking-wider text-slate-500">Supplement Summary</p>
+                                    <div className="mt-3 space-y-2 text-sm text-slate-300">
+                                        <div className="flex justify-between">
+                                            <span>Consideration</span>
+                                            <span className="font-semibold text-amber-300">${toFixed(considerationValue)}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Retention</span>
+                                            <span className="font-semibold text-emerald-300">${toFixed(retentionValue)}</span>
+                                        </div>
+                                        <div className="flex justify-between border-t border-slate-800/50 pt-2">
+                                            <span>Total Supplement</span>
+                                            <span className="font-bold text-cyan-300">${toFixed(earningsSnapshot.supplement.total)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
                         {activePage === 'drinking' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
@@ -6100,6 +6601,50 @@ function serializeShiftForRow(shift) {
 
         // Shift Detail Component
         function ShiftDetail({ shift, onEdit, onClose }) {
+            const toFixed = (value) => {
+                const amount = Number(value || 0);
+                return Number.isFinite(amount) ? amount.toFixed(2) : '0.00';
+            };
+            const tips = (shift.earnings && typeof shift.earnings.tips === 'object') ? shift.earnings.tips : {
+                tipOut: shift.earnings?.tips ?? 0,
+                chumpChange: shift.earnings?.chump ?? 0,
+                total: shift.earnings?.tips ?? 0,
+            };
+            const wageRaw = shift.earnings?.wage;
+            const wage =
+                wageRaw && typeof wageRaw === 'object'
+                    ? wageRaw
+                    : {
+                          base: Number(wageRaw || 0),
+                          differential: { total: Number(shift.earnings?.wageDifferential ?? 0) },
+                          overtime: Number(shift.earnings?.overtime ?? 0),
+                          total: Number(shift.earnings?.wage || 0),
+                      };
+            const supplementRaw = shift.earnings?.supplement;
+            const supplement =
+                supplementRaw && typeof supplementRaw === 'object'
+                    ? supplementRaw
+                    : {
+                          consideration: Number(shift.earnings?.consideration ?? 0),
+                          retention: Number(shift.earnings?.retention ?? 0),
+                          total: Number(shift.earnings?.supplement ?? 0),
+                      };
+
+            const tipsTotal = Number(
+                tips.total ?? Number(tips.tipOut || 0) + Number(tips.chumpChange || 0)
+            );
+            const wageBase = Number(wage.base ?? wage.total ?? wage);
+            const wageDifferential = Number(wage.differential?.total ?? 0);
+            const wageOvertime = Number(wage.overtime ?? shift.earnings?.overtime ?? 0);
+            const wageTotal = Number(
+                wage.total ?? wageBase + wageDifferential + wageOvertime
+            );
+            const supplementTotal = Number(
+                supplement.total ??
+                    Number(supplement.consideration || 0) +
+                        Number(supplement.retention || 0)
+            );
+
             return (
                 <div className="glass rounded-2xl shadow-xl p-6 animate-slide-in border border-slate-800/40">
                     <div className="flex items-center justify-between mb-6">
@@ -6162,23 +6707,55 @@ function serializeShiftForRow(shift) {
                         <div className="bg-slate-900/70 rounded-xl p-4 border border-slate-800/60">
                             <h3 className="font-semibold text-slate-100 mb-3">Earnings Breakdown</h3>
                             <div className="space-y-2 text-sm text-slate-300">
-                                  <div className="flex justify-between">
-                                      <span>Tips:</span>
-                                      <span className="font-semibold text-cyan-300">${Number(shift.earnings?.tips ?? 0).toFixed(2)}</span>
-                                  </div>
-                                  <div className="flex justify-between">
-                                      <span>Wage:</span>
-                                      <span className="font-semibold text-emerald-300">${Number(shift.earnings?.wage ?? 0).toFixed(2)}</span>
-                                  </div>
-                                  {Number(shift.earnings?.overtime ?? 0) > 0 && (
-                                      <div className="flex justify-between">
-                                          <span>Overtime:</span>
-                                          <span className="font-semibold text-amber-300">${Number(shift.earnings?.overtime ?? 0).toFixed(2)}</span>
-                                      </div>
-                                  )}
+                                <div>
+                                    <div className="flex justify-between">
+                                        <span>Tips:</span>
+                                        <span className="font-semibold text-cyan-300">${toFixed(tipsTotal)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs text-slate-500 pl-2">
+                                        <span>Tip Out</span>
+                                        <span>${toFixed(tips.tipOut)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs text-slate-500 pl-2">
+                                        <span>Chump Change</span>
+                                        <span>${toFixed(tips.chumpChange)}</span>
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="flex justify-between pt-1">
+                                        <span>Wage:</span>
+                                        <span className="font-semibold text-emerald-300">${toFixed(wageTotal)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs text-slate-500 pl-2">
+                                        <span>Base</span>
+                                        <span>${toFixed(wageBase)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs text-slate-500 pl-2">
+                                        <span>Differential</span>
+                                        <span>${toFixed(wageDifferential)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs text-slate-500 pl-2">
+                                        <span>Overtime</span>
+                                        <span>${toFixed(wageOvertime)}</span>
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="flex justify-between pt-1">
+                                        <span>Supplement:</span>
+                                        <span className="font-semibold text-fuchsia-300">${toFixed(supplementTotal)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs text-slate-500 pl-2">
+                                        <span>Consideration</span>
+                                        <span>${toFixed(supplement.consideration)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs text-slate-500 pl-2">
+                                        <span>Retention</span>
+                                        <span>${toFixed(supplement.retention)}</span>
+                                    </div>
+                                </div>
                                   <div className="flex justify-between pt-2 border-t border-slate-800/60 text-slate-100">
                                       <span className="font-semibold">Total:</span>
-                                      <span className="font-bold text-xl text-emerald-300">${Number(shift.earnings?.total ?? 0).toFixed(2)}</span>
+                                    <span className="font-bold text-xl text-emerald-300">${toFixed(shift.earnings?.total)}</span>
                                   </div>
                             </div>
                         </div>
