@@ -15,6 +15,17 @@ if [ ! -x "./start-server.sh" ]; then
   chmod +x ./start-server.sh
 fi
 
+if [ -f "package.json" ]; then
+  echo "Installing npm dependencies (npm install)..."
+  if ! npm install --no-fund --no-audit >/dev/null 2>&1; then
+    echo "npm install failed. See the output above for details."
+    exit 1
+  fi
+  echo "Dependencies are ready."
+else
+  echo "Warning: package.json not found. Skipping npm install."
+fi
+
 LOG_FILE="${SCRIPT_DIR}/.tip-pool-server.log"
 
 echo "================================================"
