@@ -1,4 +1,4 @@
-## Tip Pool Tracker – Dark UI Mockups
+## Bar Tracker – Dark UI Mockups
 
 ### 1. Shift Detail (Dashboard View)
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Tip Pool Tracker launcher
+# Bar Tracker launcher
 # This helper starts the dev server and opens the app in your default browser.
 
 set -euo pipefail
@@ -8,17 +8,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PORT="${TIP_POOL_APP_PORT:-8000}"
+PORT="${BAR_TRACKER_APP_PORT:-8000}"
 
 if [ ! -x "./start-server.sh" ]; then
   echo "Making start-server.sh executable..."
   chmod +x ./start-server.sh
 fi
 
-LOG_FILE="${SCRIPT_DIR}/.tip-pool-server.log"
+if [ -f "package.json" ]; then
+  echo "Installing npm dependencies (npm install)..."
+  if ! npm install --no-fund --no-audit >/dev/null 2>&1; then
+    echo "npm install failed. See the output above for details."
+    exit 1
+  fi
+  echo "Dependencies are ready."
+else
+  echo "Warning: package.json not found. Skipping npm install."
+fi
+
+LOG_FILE="${SCRIPT_DIR}/.bar-tracker-server.log"
 
 echo "================================================"
-echo " Tip Pool Tracker – Quick Start"
+echo " Bar Tracker – Quick Start"
 echo "================================================"
 echo "Using directory : $SCRIPT_DIR"
 echo "Server port     : $PORT"
@@ -38,8 +49,83 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sleep 2
-APP_URL="http://localhost:${PORT}/tip-pool-tracker.html"
+probe_url() {
+  local url="$1"
+
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 - "$url" <<'PY'
+import sys
+from urllib.request import urlopen
+from urllib.error import URLError, HTTPError
+
+url = sys.argv[1]
+try:
+    with urlopen(url, timeout=1):
+        pass
+except (URLError, HTTPError):
+    sys.exit(1)
+PY
+    then
+      return 0
+    fi
+    return 1
+  fi
+
+  return 1
+}
+
+wait_for_server() {
+  local max_attempts="${1:-40}"
+  local delay="${2:-0.5}"
+  local attempt=0
+  local url="http://127.0.0.1:${PORT}/bar-tracker.html"
+
+  while (( attempt < max_attempts )); do
+    if ! ps -p "$SERVER_PID" >/dev/null 2>&1; then
+      return 2
+    fi
+
+    if probe_url "$url"; then
+      return 0
+    fi
+
+    attempt=$((attempt + 1))
+    sleep "$delay"
+  done
+
+  return 1
+}
+
+echo "Waiting for server to become ready..."
+if wait_for_server 40 0.5; then
+  echo "Server is ready."
+else
+  status=$?
+  echo "Failed to confirm that the server is ready."
+  if [ "$status" -eq 2 ]; then
+    echo "The server process exited unexpectedly. Check the log below:"
+  else
+    echo "The server did not respond within the expected time. Check the log below:"
+  fi
+
+  if [ -f "$LOG_FILE" ]; then
+    echo "----- Last 40 log lines -----"
+    tail -n 40 "$LOG_FILE" || true
+    echo "----- End log -----"
+  else
+    echo "Log file $LOG_FILE not found."
+  fi
+  exit 1
+fi
+
+APP_URL="http://localhost:${PORT}/bar-tracker.html"
 
 echo "Opening $APP_URL"
 if command -v xdg-open >/dev/null 2>&1; then

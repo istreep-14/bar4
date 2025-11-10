@@ -1,409 +1,41 @@
-<!DOCTYPE html>
-<html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Tip Pool Tracker</title>
-        <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-        <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-        <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        <script src="https://apis.google.com/js/api.js"></script>
-        <script src="https://accounts.google.com/gsi/client" async defer></script>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background-color: #090b12;
-            color: #f1f5f9;
-        }
-        .glass {
-            background: rgba(23, 26, 35, 0.85);
-            backdrop-filter: blur(18px);
-            border: 1px solid rgba(148, 163, 184, 0.08);
-        }
-        .card-hover {
-            transition: all 0.3s ease;
-        }
-        .card-hover:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 18px 35px rgba(15, 23, 42, 0.35);
-        }
-        .badge-pill {
-            padding: 0.25rem 0.6rem;
-            border-radius: 999px;
-            font-size: 0.7rem;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-        }
-        .icon-button {
-            transition: all 0.2s ease;
-        }
-        .icon-button:hover {
-            transform: translateY(-1px) scale(1.02);
-        }
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        .animate-slide-in {
-            animation: slideIn 0.4s ease-out;
-        }
-        .scrollbar-thin::-webkit-scrollbar {
-            width: 6px;
-        }
-        .scrollbar-thin::-webkit-scrollbar-track {
-            background: #f1f1f1;
-        }
-        .scrollbar-thin::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 3px;
-        }
-        .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-            background: #555;
-        }
-    </style>
-</head>
-    <body class="bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 min-h-screen">
-    <div id="root"></div>
+// @ts-nocheck
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import Chart from 'chart.js/auto';
+import { APP_SERVER_PORT, CONTROL_SERVER_ORIGIN, ensureAppServerRunning } from './lib/serverControl';
+import { sheetsAPI, SCOPES } from './lib/googleSheets';
+import {
+  loadStoredAuthToken,
+  storeAuthToken,
+  clearStoredAuthToken,
+  loadCachedShifts,
+  storeCachedShifts,
+  loadPendingQueue,
+  storePendingQueue,
+  CONFIG_STORAGE_KEY,
+  REMOTE_CONFIG_PATH,
+  isOnline,
+} from './lib/storage';
 
-    <script type="text/babel">
-        const { useState, useEffect, useMemo, useRef, useCallback } = React;
+const VIEW_MODES = Object.freeze({
+  DASHBOARD: 'dashboard',
+  SHIFT_CREATE: 'shift-create',
+  SHIFT_EDIT: 'shift-edit',
+  SHIFT_VIEW: 'shift-view',
+  COWORKERS: 'coworkers',
+});
 
-        const APP_SERVER_PORT = parseInt(window.TIP_POOL_APP_PORT || '8000', 10);
-        const CONTROL_SERVER_ORIGIN = window.TIP_POOL_CONTROL_ORIGIN || 'http://localhost:4100';
+const CREW_POSITION_OPTIONS = ['Bartender', 'Server', 'Expo', 'Busser', 'Hostess', 'Door'];
+const COWORKER_SHEET_NAME = 'Coworkers';
 
-        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.') => {
+  if (!error) return fallback;
+  if (typeof error === 'string') return error;
+  if (error?.result?.error?.message) return error.result.error.message;
+  if (error?.message) return error.message;
+  return fallback;
+};
 
-        async function fetchControlServerStatus() {
-            try {
-                const response = await fetch(`${CONTROL_SERVER_ORIGIN}/server/status`, { mode: 'cors' });
-                if (!response.ok) {
-                    return { ok: false, error: new Error(`Status ${response.status}`) };
-                }
-                const body = await response.json();
-                return { ok: true, body };
-            } catch (error) {
-                return { ok: false, error };
-            }
-        }
-
-        async function ensureAppServerRunning({ retries = 3, waitMs = 600 } = {}) {
-            let lastStatus = null;
-            let lastError = null;
-
-            for (let attempt = 0; attempt <= retries; attempt++) {
-                const statusResult = await fetchControlServerStatus();
-                if (statusResult.ok && statusResult.body.running) {
-                    return { ok: true, status: statusResult.body, attempts: attempt + 1 };
-                }
-
-                if (!statusResult.ok) {
-                    lastError = statusResult.error;
-                } else {
-                    lastStatus = statusResult.body;
-                }
-
-                try {
-                    await fetch(`${CONTROL_SERVER_ORIGIN}/server/start`, {
-                        method: 'POST',
-                        mode: 'cors',
-                        headers: { 'Content-Type': 'application/json' },
-                    });
-                } catch (error) {
-                    lastError = error;
-                }
-
-                await wait(waitMs * (attempt + 1));
-            }
-
-            return { ok: false, status: lastStatus, error: lastError };
-        }
-
-        // Google Sheets API Configuration
-        const DISCOVERY_DOCS = ["https://sheets.googleapis.com/$discovery/rest?version=v4"];
-        const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
-
-        // Google Sheets Helper Functions
-        class GoogleSheetsAPI {
-            constructor() {
-                this.gapiLoaded = false;
-                this.gisLoaded = false;
-                this.tokenClient = null;
-                this.accessToken = null;
-                this.tokenExpiry = null;
-                this.onToken = null;
-            }
-
-            setTokenListener(listener) {
-                this.onToken = typeof listener === 'function' ? listener : null;
-            }
-
-            handleTokenResponse(response) {
-                if (!response || response.error) {
-                    console.warn('Token request was not successful', response?.error);
-                    return false;
-                }
-                if (response.access_token) {
-                    this.accessToken = response.access_token;
-                    if (typeof gapi !== 'undefined' && gapi?.client?.setToken) {
-                        gapi.client.setToken({ access_token: response.access_token });
-                    }
-                    const expiresIn = Number(response.expires_in || response.expiresIn);
-                    this.tokenExpiry = Number.isFinite(expiresIn) ? Date.now() + expiresIn * 1000 : null;
-                    if (this.onToken) {
-                        this.onToken({
-                            access_token: response.access_token,
-                            expires_in: response.expires_in,
-                            expires_at: this.tokenExpiry,
-                            scope: response.scope,
-                        });
-                    }
-                    return true;
-                }
-                return false;
-            }
-
-            applySavedToken(session) {
-                if (!session || !session.accessToken) return false;
-                if (typeof gapi === 'undefined' || !gapi?.client?.setToken) return false;
-                gapi.client.setToken({ access_token: session.accessToken });
-                this.accessToken = session.accessToken;
-                this.tokenExpiry = session.expiresAt || null;
-                return true;
-            }
-
-            clearToken() {
-                if (typeof gapi !== 'undefined' && gapi?.client?.setToken) {
-                    gapi.client.setToken(null);
-                }
-                this.accessToken = null;
-                this.tokenExpiry = null;
-            }
-
-            async initialize(clientId, apiKey) {
-                return new Promise((resolve, reject) => {
-                    if (typeof gapi === 'undefined') {
-                        reject('Google API not loaded');
-                        return;
-                    }
-
-                    gapi.load('client', async () => {
-                        try {
-                            await gapi.client.init({
-                                apiKey: apiKey,
-                                discoveryDocs: DISCOVERY_DOCS,
-                            });
-                            this.gapiLoaded = true;
-                            this.clientId = clientId;
-                            this.apiKey = apiKey;
-                            
-                            // Initialize GIS
-                            if (typeof google !== 'undefined' && google.accounts) {
-                                this.tokenClient = google.accounts.oauth2.initTokenClient({
-                                    client_id: clientId,
-                                    scope: SCOPES,
-                                    callback: (response) => {
-                                        this.handleTokenResponse(response);
-                                    },
-                                });
-                                this.gisLoaded = true;
-                            }
-                            
-                            resolve(true);
-                        } catch (error) {
-                            reject(error);
-                        }
-                    });
-                });
-            }
-
-            requestAccessToken(options = {}) {
-                return new Promise((resolve) => {
-                    if (this.tokenClient) {
-                        this.tokenClient.callback = (response) => {
-                            resolve(this.handleTokenResponse(response));
-                        };
-                        const requestOptions = {};
-                        if (options.prompt !== undefined) {
-                            requestOptions.prompt = options.prompt;
-                        }
-                        this.tokenClient.requestAccessToken(requestOptions);
-                    } else {
-                        resolve(false);
-                    }
-                });
-            }
-
-            async readData(spreadsheetId, range) {
-                try {
-                    const response = await gapi.client.sheets.spreadsheets.values.get({
-                        spreadsheetId: spreadsheetId,
-                        range: range,
-                    });
-                    return response.result.values || [];
-                } catch (error) {
-                    console.error('Error reading data:', error);
-                    throw error;
-                }
-            }
-
-            async writeData(spreadsheetId, range, values) {
-                try {
-                    const response = await gapi.client.sheets.spreadsheets.values.update({
-                        spreadsheetId: spreadsheetId,
-                        range: range,
-                        valueInputOption: 'RAW',
-                        resource: { values: values },
-                    });
-                    return response.result;
-                } catch (error) {
-                    console.error('Error writing data:', error);
-                    throw error;
-                }
-            }
-
-            async appendData(spreadsheetId, range, values) {
-                try {
-                    const response = await gapi.client.sheets.spreadsheets.values.append({
-                        spreadsheetId: spreadsheetId,
-                        range: range,
-                        valueInputOption: 'RAW',
-                        insertDataOption: 'INSERT_ROWS',
-                        resource: { values: values },
-                    });
-                    return response.result;
-                } catch (error) {
-                    console.error('Error appending data:', error);
-                    throw error;
-                }
-            }
-
-            async deleteRow(spreadsheetId, sheetId, rowIndex) {
-                try {
-                    const response = await gapi.client.sheets.spreadsheets.batchUpdate({
-                        spreadsheetId: spreadsheetId,
-                        resource: {
-                            requests: [{
-                                deleteDimension: {
-                                    range: {
-                                        sheetId: sheetId,
-                                        dimension: 'ROWS',
-                                        startIndex: rowIndex,
-                                        endIndex: rowIndex + 1,
-                                    },
-                                },
-                            }],
-                        },
-                    });
-                    return response.result;
-                } catch (error) {
-                    console.error('Error deleting row:', error);
-                    throw error;
-                }
-            }
-        }
-
-        const sheetsAPI = new GoogleSheetsAPI();
-
-        const SHIFT_CACHE_KEY = 'tipPool.shiftCache.v2';
-        const SHIFT_QUEUE_KEY = 'tipPool.shiftQueue.v1';
-        const AUTH_TOKEN_KEY = 'tipPool.authToken.v1';
-        const CONFIG_STORAGE_KEY = 'tipPoolConfig';
-        const REMOTE_CONFIG_PATH = 'config.json';
-
-        function loadStoredAuthToken() {
-            try {
-                const raw = localStorage.getItem(AUTH_TOKEN_KEY);
-                if (!raw) return null;
-                const parsed = JSON.parse(raw);
-                if (!parsed || !parsed.accessToken) return null;
-                if (parsed.expiresAt) {
-                    parsed.expiresAt = Number(parsed.expiresAt);
-                }
-                return parsed;
-            } catch (error) {
-                console.warn('Failed to parse stored auth token', error);
-                return null;
-            }
-        }
-
-        function storeAuthToken(session) {
-            try {
-                if (!session) {
-                    localStorage.removeItem(AUTH_TOKEN_KEY);
-                    return;
-                }
-                const payload = {
-                    accessToken: session.accessToken,
-                    expiresAt: session.expiresAt,
-                    scope: session.scope,
-                    receivedAt: Date.now(),
-                };
-                localStorage.setItem(AUTH_TOKEN_KEY, JSON.stringify(payload));
-            } catch (error) {
-                console.warn('Failed to persist auth token', error);
-            }
-        }
-
-        function clearStoredAuthToken() {
-            try {
-                localStorage.removeItem(AUTH_TOKEN_KEY);
-            } catch (error) {
-                console.warn('Failed to clear auth token', error);
-            }
-        }
-
-        function loadCachedShifts() {
-            try {
-                const raw = localStorage.getItem(SHIFT_CACHE_KEY);
-                if (!raw) return null;
-                const parsed = JSON.parse(raw);
-                if (!Array.isArray(parsed)) return null;
-                return parsed;
-            } catch (error) {
-                console.warn('Failed to parse cached shifts', error);
-                return null;
-            }
-        }
-
-        function storeCachedShifts(records) {
-            try {
-                localStorage.setItem(SHIFT_CACHE_KEY, JSON.stringify(records || []));
-            } catch (error) {
-                console.warn('Failed to store cached shifts', error);
-            }
-        }
-
-        function loadPendingQueue() {
-            try {
-                const raw = localStorage.getItem(SHIFT_QUEUE_KEY);
-                if (!raw) return [];
-                const parsed = JSON.parse(raw);
-                if (!Array.isArray(parsed)) return [];
-                return parsed;
-            } catch (error) {
-                console.warn('Failed to parse pending queue', error);
-                return [];
-            }
-        }
-
-        function storePendingQueue(queue) {
-            try {
-                localStorage.setItem(SHIFT_QUEUE_KEY, JSON.stringify(queue || []));
-            } catch (error) {
-                console.warn('Failed to store pending queue', error);
-            }
-        }
-
-        function serializeShiftForRow(shift) {
+function serializeShiftForRow(shift) {
             const totalEarnings = parseFloat(shift?.earnings?.total ?? 0) || 0;
             const hours = parseFloat(shift?.summary?.hours ?? 0) || 0;
             return [
@@ -487,18 +119,15 @@
             return record?.rowIndex || null;
         }
 
-        function isOnline() {
-            return typeof navigator !== 'undefined' ? navigator.onLine : true;
-        }
-
         // Main App Component
         function App() {
-            const [view, setView] = useState('list'); // list, create, edit, view
+            const [view, setView] = useState(VIEW_MODES.DASHBOARD);
             const [shifts, setShifts] = useState(() => loadCachedShifts() || []);
             const [currentShift, setCurrentShift] = useState(null);
             const [isAuthenticated, setIsAuthenticated] = useState(false);
             const [authSession, setAuthSession] = useState(() => loadStoredAuthToken());
             const authSessionRef = useRef(authSession);
+            const coworkerSheetMetaRef = useRef({ ensured: false, sheetId: null });
             const [config, setConfig] = useState({
                 clientId: '',
                 apiKey: '',
@@ -513,6 +142,15 @@
                   message: `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
               });
             const [coworkerDirectory, setCoworkerDirectory] = useState([]);
+            const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+            useEffect(() => {
+                if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) {
+                    setSidebarCollapsed(true);
+                } else if (view === VIEW_MODES.DASHBOARD || view === VIEW_MODES.SHIFT_DETAIL) {
+                    setSidebarCollapsed(false);
+                }
+            }, [view]);
 
             useEffect(() => {
                 authSessionRef.current = authSession;
@@ -780,13 +418,84 @@
                 }
             }, [config.sheetName, config.spreadsheetId, isAuthenticated]);
 
+            const ensureCoworkerSheetExists = useCallback(async () => {
+                if (!config.spreadsheetId || !isAuthenticated) return null;
+                if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                    throw new Error('Google Sheets client is not ready yet. Try reconnecting Google Sheets.');
+                }
+
+                const cache = coworkerSheetMetaRef.current || { ensured: false, sheetId: null };
+                if (cache.ensured) {
+                    return cache.sheetId ?? null;
+                }
+
+                try {
+                    const spreadsheet = await gapi.client.sheets.spreadsheets.get({
+                        spreadsheetId: config.spreadsheetId,
+                        includeGridData: false,
+                    });
+                    const existing = spreadsheet.result?.sheets?.find(
+                        (sheet) => sheet.properties?.title === COWORKER_SHEET_NAME
+                    );
+                    if (existing) {
+                        const sheetId = existing.properties?.sheetId ?? null;
+                        coworkerSheetMetaRef.current = { ensured: true, sheetId };
+                        return sheetId;
+                    }
+                } catch (error) {
+                    throw new Error(getSheetsErrorMessage(error, 'Unable to inspect spreadsheet for coworker tab.'));
+                }
+
+                try {
+                    const addResponse = await gapi.client.sheets.spreadsheets.batchUpdate({
+                        spreadsheetId: config.spreadsheetId,
+                        resource: {
+                            requests: [
+                                {
+                                    addSheet: {
+                                        properties: {
+                                            title: COWORKER_SHEET_NAME,
+                                            tabColor: { red: 0.129, green: 0.231, blue: 0.541 },
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    });
+                    const newSheetId =
+                        addResponse.result?.replies?.[0]?.addSheet?.properties?.sheetId ?? null;
+                    await gapi.client.sheets.spreadsheets.values.update({
+                        spreadsheetId: config.spreadsheetId,
+                        range: `${COWORKER_SHEET_NAME}!A1:F1`,
+                        valueInputOption: 'RAW',
+                        resource: {
+                            values: [['ID', 'Name', 'First', 'Last', 'Positions', 'Manager']],
+                        },
+                    });
+                    coworkerSheetMetaRef.current = { ensured: true, sheetId: newSheetId };
+                    return newSheetId;
+                } catch (error) {
+                    coworkerSheetMetaRef.current = { ensured: false, sheetId: null };
+                    throw new Error(getSheetsErrorMessage(error, 'Unable to create Coworkers sheet.'));
+                }
+            }, [config.spreadsheetId, isAuthenticated]);
+
             const loadCoworkerDirectory = useCallback(async () => {
                 if (!config.spreadsheetId || !isAuthenticated) return;
                 try {
-                    const rows = await sheetsAPI.readData(config.spreadsheetId, 'Coworkers!A2:F');
+                    await ensureCoworkerSheetExists();
+                    const rows = await sheetsAPI.readData(config.spreadsheetId, `${COWORKER_SHEET_NAME}!A2:F`);
                     const directory = (rows || [])
                         .map((row, index) => {
-                            const [trappeId, name, firstName, lastName, positionsRaw, managerRaw] = row;
+                            const [
+                                trappeId = '',
+                                name = '',
+                                firstName = '',
+                                lastName = '',
+                                positionsRaw = '',
+                                managerRaw = '',
+                            ] = row || [];
+                            const rowIndex = index + 2;
                             const fallbackName = [firstName, lastName].filter(Boolean).join(' ');
                             const normalizedName = (name || fallbackName || '').trim();
                             if (!normalizedName) return null;
@@ -801,6 +510,7 @@
                                 normalizedName.toLowerCase() === 'ian' ||
                                 (firstName || '').trim().toLowerCase() === 'ian';
                             return {
+                                rowIndex,
                                 id: trappeId || `coworker_${index}`,
                                 name: normalizedName,
                                 firstName: firstName || '',
@@ -813,11 +523,126 @@
                         })
                         .filter(Boolean);
                     setCoworkerDirectory(directory);
+                    setError((prev) =>
+                        prev && prev.toLowerCase().includes('coworker') ? null : prev
+                    );
                 } catch (directoryError) {
                     console.warn('Failed to load coworker directory', directoryError);
                     setCoworkerDirectory([]);
+                    setError(getSheetsErrorMessage(directoryError, 'Failed to load coworker directory.'));
                 }
-            }, [config.spreadsheetId, isAuthenticated]);
+            }, [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated]);
+
+            const coworkerRowRange = (rowIndex) => `${COWORKER_SHEET_NAME}!A${rowIndex}:F${rowIndex}`;
+
+            const formatCoworkerForSheet = (draft) => {
+                if (!draft) return null;
+                const firstName = (draft.firstName || '').trim();
+                const lastName = (draft.lastName || '').trim();
+                const displayName = (draft.name || `${firstName} ${lastName}` || '').trim();
+                const positions = Array.isArray(draft.positions)
+                    ? draft.positions.filter(Boolean)
+                    : [];
+                return {
+                    rowIndex: draft.rowIndex || null,
+                    id: (draft.id || '').trim(),
+                    name: displayName,
+                    firstName,
+                    lastName,
+                    positions,
+                    isManager: !!draft.isManager,
+                };
+            };
+
+            const upsertCoworkerRecord = useCallback(
+                async (draft) => {
+                    if (!config.spreadsheetId || !isAuthenticated) {
+                        throw new Error('Connect Google Sheets to manage coworkers.');
+                    }
+                    if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                        throw new Error('Google Sheets client is not ready yet.');
+                    }
+                    await ensureCoworkerSheetExists();
+
+                    const payload = formatCoworkerForSheet(draft);
+                    if (!payload) {
+                        throw new Error('Invalid coworker details.');
+                    }
+                    if (!payload.name) {
+                        throw new Error('Name is required.');
+                    }
+                    const positionsValue = payload.positions.join(', ');
+                    const rowValues = [
+                        payload.id,
+                        payload.name,
+                        payload.firstName,
+                        payload.lastName,
+                        positionsValue,
+                        payload.isManager ? 'TRUE' : '',
+                    ];
+
+                    try {
+                        if (payload.rowIndex) {
+                            await gapi.client.sheets.spreadsheets.values.update({
+                                spreadsheetId: config.spreadsheetId,
+                                range: coworkerRowRange(payload.rowIndex),
+                                valueInputOption: 'RAW',
+                                resource: {
+                                    values: [rowValues],
+                                },
+                            });
+                        } else {
+                            await gapi.client.sheets.spreadsheets.values.append({
+                                spreadsheetId: config.spreadsheetId,
+                                range: `${COWORKER_SHEET_NAME}!A:F`,
+                                valueInputOption: 'RAW',
+                                insertDataOption: 'INSERT_ROWS',
+                                resource: {
+                                    values: [rowValues],
+                                },
+                            });
+                        }
+                    } catch (error) {
+                        throw new Error(getSheetsErrorMessage(error, 'Unable to save coworker.'));
+                    }
+
+                    await loadCoworkerDirectory();
+                    return payload;
+                },
+                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
+            );
+
+            const deleteCoworkerRecord = useCallback(
+                async (record) => {
+                    if (!config.spreadsheetId || !isAuthenticated) {
+                        throw new Error('Connect Google Sheets to manage coworkers.');
+                    }
+                    if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                        throw new Error('Google Sheets client is not ready yet.');
+                    }
+                    if (!record?.rowIndex) {
+                        throw new Error('Missing row information for coworker.');
+                    }
+
+                    await ensureCoworkerSheetExists();
+
+                    try {
+                        await gapi.client.sheets.spreadsheets.values.update({
+                            spreadsheetId: config.spreadsheetId,
+                            range: coworkerRowRange(record.rowIndex),
+                            valueInputOption: 'RAW',
+                            resource: {
+                                values: [['', '', '', '', '', '']],
+                            },
+                        });
+                    } catch (error) {
+                        throw new Error(getSheetsErrorMessage(error, 'Unable to delete coworker.'));
+                    }
+
+                    await loadCoworkerDirectory();
+                },
+                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
+            );
 
             const syncingRef = useRef(false);
 
@@ -940,7 +765,7 @@
                 });
                 setShifts(nextRecords);
                 storeCachedShifts(nextRecords);
-                setView('list');
+                setView(VIEW_MODES.DASHBOARD);
 
                 if (!config.spreadsheetId || !isAuthenticated) return;
 
@@ -986,7 +811,7 @@
                     const normalizedSeed = normalizeShiftPayload(seed) || seed;
                     const draft = deepMergeShift(DEFAULT_SHIFT_TEMPLATE, normalizedSeed);
                     setCurrentShift(draft);
-                    setView('create');
+                    setView(VIEW_MODES.SHIFT_CREATE);
                 },
                 []
             );
@@ -1004,17 +829,55 @@
 
             const editShift = (shift) => {
                 setCurrentShift(shift.data);
-                setView('edit');
+                setView(VIEW_MODES.SHIFT_EDIT);
             };
 
             const viewShift = (shift) => {
                 setCurrentShift(shift.data);
-                setView('view');
+                setView(VIEW_MODES.SHIFT_VIEW);
+            };
+
+            const navItems = [
+                { key: VIEW_MODES.DASHBOARD, label: 'Dashboard', icon: 'fa-chart-line' },
+                { key: 'shift-new', label: 'Shift Entry', icon: 'fa-pen-to-square' },
+                { key: VIEW_MODES.COWORKERS, label: 'Crew Database', icon: 'fa-users' },
+            ];
+
+            const activeNavKey = (() => {
+                if (view === VIEW_MODES.COWORKERS) return VIEW_MODES.COWORKERS;
+                if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) return 'shift-new';
+                if (view === VIEW_MODES.SHIFT_VIEW) return VIEW_MODES.DASHBOARD;
+                return VIEW_MODES.DASHBOARD;
+            })();
+
+            const handleNavSelect = (key) => {
+                if (key === 'shift-new') {
+                    startNewShift({ date: new Date().toISOString().split('T')[0] });
+                    return;
+                }
+                if (key === VIEW_MODES.DASHBOARD) {
+                    setView(VIEW_MODES.DASHBOARD);
+                    return;
+                }
+                if (key === VIEW_MODES.COWORKERS) {
+                    setCurrentShift(null);
+                    setView(VIEW_MODES.COWORKERS);
+                }
             };
 
             return (
-                <div className="min-h-screen p-4 md:p-8">
-                    <div className="max-w-7xl mx-auto">
+                <div className="min-h-screen flex">
+                    <SidebarNav
+                        items={navItems}
+                        activeKey={activeNavKey}
+                        onSelect={handleNavSelect}
+                        collapsed={sidebarCollapsed}
+                        onToggle={() => setSidebarCollapsed((prev) => !prev)}
+                    />
+                    <div className="flex-1 flex flex-col">
+                        <MobileNav items={navItems} activeKey={activeNavKey} onSelect={handleNavSelect} />
+                        <main className="flex-1 p-4 md:p-8">
+                            <div className="max-w-7xl mx-auto">
                         {/* Header */}
                         <header className="glass rounded-2xl shadow-xl p-6 mb-6 animate-slide-in border border-slate-800/40">
                             <div className="flex items-center justify-between flex-wrap gap-4">
@@ -1024,7 +887,7 @@
                                     </div>
                                     <div>
                                         <h1 className="text-3xl font-bold text-slate-100">
-                                            Tip Pool Tracker
+                                            Bar Tracker
                                         </h1>
                                         <p className="text-slate-400 text-sm">Track your shifts, tips, and earnings</p>
                                     </div>
@@ -1118,41 +981,51 @@
                         {/* Main Content */}
                         {!showConfig && isAuthenticated && (
                             <>
-                                {view === 'list' && (
+                                {view === VIEW_MODES.DASHBOARD && (
                                     <div className="space-y-6">
                                         <ShiftList
                                             shifts={shifts}
                                             onEdit={editShift}
                                             onDelete={deleteShift}
                                             onView={viewShift}
-                                              onStartNew={startNewShiftForDate}
+                                            onStartNew={startNewShiftForDate}
                                             loading={loading}
                                             onRefresh={loadShifts}
                                         />
                                         <ChartsPanel shifts={shifts} />
                                     </div>
                                 )}
-                                  {view === 'create' && (
-                                    <ShiftForm
-                                          shift={currentShift}
-                                        onSave={saveShift}
-                                          onCancel={() => setView('list')}
-                                          coworkerDirectory={coworkerDirectory}
-                                    />
-                                )}
-                                {view === 'edit' && currentShift && (
+                                {view === VIEW_MODES.SHIFT_CREATE && (
                                     <ShiftForm
                                         shift={currentShift}
                                         onSave={saveShift}
-                                          onCancel={() => setView('list')}
-                                          coworkerDirectory={coworkerDirectory}
+                                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
+                                        coworkerDirectory={coworkerDirectory}
                                     />
                                 )}
-                                {view === 'view' && currentShift && (
+                                {view === VIEW_MODES.SHIFT_EDIT && currentShift && (
+                                    <ShiftForm
+                                        shift={currentShift}
+                                        onSave={saveShift}
+                                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
+                                        coworkerDirectory={coworkerDirectory}
+                                    />
+                                )}
+                                {view === VIEW_MODES.SHIFT_VIEW && currentShift && (
                                     <ShiftDetail
                                         shift={currentShift}
-                                        onEdit={() => setView('edit')}
-                                        onClose={() => setView('list')}
+                                        onEdit={() => setView(VIEW_MODES.SHIFT_EDIT)}
+                                        onClose={() => setView(VIEW_MODES.DASHBOARD)}
+                                    />
+                                )}
+                                {view === VIEW_MODES.COWORKERS && (
+                                    <CoworkerDatabase
+                                        records={coworkerDirectory}
+                                        onCreate={upsertCoworkerRecord}
+                                        onUpdate={upsertCoworkerRecord}
+                                        onDelete={deleteCoworkerRecord}
+                                        onRefresh={loadCoworkerDirectory}
+                                        positions={CREW_POSITION_OPTIONS}
                                     />
                                 )}
                             </>
@@ -1175,6 +1048,105 @@
                                 </button>
                             </div>
                         )}
+                            </div>
+                        </main>
+                    </div>
+                </div>
+            );
+        }
+
+        function SidebarNav({ items, activeKey, onSelect, collapsed = false, onToggle }) {
+            if (!items?.length) return null;
+            const widthClass = collapsed ? 'lg:w-20' : 'lg:w-64';
+            const headerPadding = collapsed ? 'px-4' : 'px-6';
+            const navPadding = collapsed ? 'px-2' : 'px-4';
+            return (
+                <aside
+                    className={`hidden lg:flex ${widthClass} flex-col bg-slate-950/80 border-r border-slate-800/60 transition-all duration-300`}
+                >
+                    <div
+                        className={`${headerPadding} py-6 border-b border-slate-800/60 flex items-center justify-between gap-3`}
+                    >
+                        <div className={`flex items-center ${collapsed ? 'justify-center w-full' : 'gap-3'} transition-all duration-300`}>
+                            <div className="bg-gradient-to-br from-cyan-500 to-fuchsia-500 p-3 rounded-xl text-white text-2xl">
+                                <i className="fas fa-coins"></i>
+                            </div>
+                            {!collapsed && (
+                                <div>
+                                    <p className="text-sm uppercase tracking-widest text-slate-500">Bar Tracker</p>
+                                    <h2 className="text-xl font-semibold text-slate-100">Tracker</h2>
+                                </div>
+                            )}
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => onToggle && onToggle()}
+                            className="text-slate-400 hover:text-white bg-slate-900/60 hover:bg-slate-900 border border-slate-700 rounded-lg p-2 transition"
+                            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                        >
+                            <i className={`fas ${collapsed ? 'fa-angles-right' : 'fa-angles-left'}`}></i>
+                        </button>
+                    </div>
+                    <nav className={`flex-1 ${navPadding} py-6 space-y-2 overflow-y-auto`}>
+                        {items.map((item) => {
+                            const isActive = item.key === activeKey;
+                            return (
+                                <button
+                                    key={item.key}
+                                    onClick={() => onSelect(item.key)}
+                                    title={item.label}
+                                    className={`w-full flex items-center ${
+                                        collapsed ? 'justify-center px-0' : 'justify-start px-4 gap-3'
+                                    } py-3 rounded-xl text-sm transition ${
+                                        isActive
+                                            ? 'bg-gradient-to-r from-cyan-500/70 via-fuchsia-500/60 to-fuchsia-500/80 text-white shadow-lg shadow-cyan-500/20'
+                                            : 'text-slate-300 hover:bg-slate-800/60 hover:text-white'
+                                    }`}
+                                >
+                                    <i className={`fas ${item.icon}`}></i>
+                                    <span className={collapsed ? 'sr-only' : ''}>{item.label}</span>
+                                </button>
+                            );
+                        })}
+                    </nav>
+                </aside>
+            );
+        }
+
+        function MobileNav({ items, activeKey, onSelect }) {
+            if (!items?.length) return null;
+            return (
+                <div className="lg:hidden px-4 pt-4">
+                    <div className="glass rounded-2xl border border-slate-800/40 p-4 shadow-lg shadow-slate-950/30">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-slate-100">
+                                <div className="bg-gradient-to-br from-cyan-500 to-fuchsia-500 p-2 rounded-lg text-white">
+                                    <i className="fas fa-coins"></i>
+                                </div>
+                                <div>
+                                    <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">Bar Tracker</p>
+                                    <p className="font-semibold">Tracker</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {items.map((item) => {
+                                    const isActive = item.key === activeKey;
+                                    return (
+                                        <button
+                                            key={item.key}
+                                            onClick={() => onSelect(item.key)}
+                                            className={`px-3 py-2 rounded-xl text-xs font-medium tracking-wide transition ${
+                                                isActive
+                                                    ? 'bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white shadow-sm shadow-cyan-500/30'
+                                                    : 'bg-slate-900/70 text-slate-300 border border-slate-800 hover:text-white'
+                                            }`}
+                                        >
+                                            {item.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
                     </div>
                 </div>
             );
@@ -1278,6 +1250,409 @@
                                 <li>Copy the Spreadsheet ID from the URL</li>
                             </ol>
                         </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function CoworkerDatabase({ records = [], onCreate, onUpdate, onDelete, onRefresh, positions = [] }) {
+            const [filter, setFilter] = useState('');
+            const [editingKey, setEditingKey] = useState(null);
+            const [draft, setDraft] = useState({
+                rowIndex: null,
+                id: '',
+                name: '',
+                firstName: '',
+                lastName: '',
+                positions: [],
+                isManager: false,
+            });
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState(null);
+
+            const resetDraft = () => {
+                setEditingKey(null);
+                setDraft({
+                    rowIndex: null,
+                    id: '',
+                    name: '',
+                    firstName: '',
+                    lastName: '',
+                    positions: [],
+                    isManager: false,
+                });
+            };
+
+            const sortedRecords = useMemo(() => {
+                const list = Array.isArray(records) ? [...records] : [];
+                list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                return list;
+            }, [records]);
+
+            const filteredRecords = useMemo(() => {
+                if (!filter) return sortedRecords;
+                const search = filter.trim().toLowerCase();
+                if (!search) return sortedRecords;
+                return sortedRecords.filter((record) => {
+                    const tokens = [
+                        record.id,
+                        record.name,
+                        record.firstName,
+                        record.lastName,
+                        ...(record.positions || []),
+                    ]
+                        .filter(Boolean)
+                        .map((value) => String(value).toLowerCase());
+                    return tokens.some((token) => token.includes(search));
+                });
+            }, [sortedRecords, filter]);
+
+            const positionsList = positions.length ? positions : CREW_POSITION_OPTIONS;
+
+            const handleStartCreate = () => {
+                setMessage(null);
+                setEditingKey('new');
+                setDraft({
+                    rowIndex: null,
+                    id: '',
+                    name: '',
+                    firstName: '',
+                    lastName: '',
+                    positions: [],
+                    isManager: false,
+                });
+            };
+
+            const handleStartEdit = (record) => {
+                setMessage(null);
+                setEditingKey(record.id || `row-${record.rowIndex}`);
+                setDraft({
+                    rowIndex: record.rowIndex || null,
+                    id: record.id || '',
+                    name: record.name || '',
+                    firstName: record.firstName || '',
+                    lastName: record.lastName || '',
+                    positions: Array.isArray(record.positions) ? [...record.positions] : [],
+                    isManager: !!record.isManager,
+                });
+            };
+
+            const handleDraftChange = (field, value) => {
+                setDraft((prev) => ({
+                    ...prev,
+                    [field]: value,
+                }));
+            };
+
+            const togglePosition = (position) => {
+                setDraft((prev) => {
+                    const current = Array.isArray(prev.positions) ? prev.positions : [];
+                    const exists = current.includes(position);
+                    return {
+                        ...prev,
+                        positions: exists ? current.filter((item) => item !== position) : [...current, position],
+                    };
+                });
+            };
+
+            const handleCancel = () => {
+                resetDraft();
+            };
+
+            const handleSubmit = async () => {
+                if (!editingKey) return;
+                setSaving(true);
+                setMessage(null);
+                try {
+                    const payload = { ...draft, positions: Array.from(new Set(draft.positions || [])) };
+                    if (editingKey === 'new') {
+                        await onCreate?.(payload);
+                        setMessage({ type: 'success', text: 'Coworker added.' });
+                    } else {
+                        await onUpdate?.(payload);
+                        setMessage({ type: 'success', text: 'Coworker updated.' });
+                    }
+                    resetDraft();
+                } catch (error) {
+                    setMessage({ type: 'error', text: error?.message || 'Unable to save coworker.' });
+                } finally {
+                    setSaving(false);
+                }
+            };
+
+            const handleDelete = async (record) => {
+                if (!onDelete) return;
+                if (!confirm(`Remove ${record.name || 'this coworker'} from the directory?`)) return;
+                setSaving(true);
+                setMessage(null);
+                try {
+                    await onDelete(record);
+                    setMessage({ type: 'success', text: 'Coworker removed.' });
+                    if (editingKey && (editingKey === record.id || editingKey === `row-${record.rowIndex}`)) {
+                        resetDraft();
+                    }
+                } catch (error) {
+                    setMessage({ type: 'error', text: error?.message || 'Unable to delete coworker.' });
+                } finally {
+                    setSaving(false);
+                }
+            };
+
+            const renderPositionsBadges = (record) => {
+                const list = Array.isArray(record.positions) ? record.positions : [];
+                if (!list.length) {
+                    return <span className="text-xs text-slate-500">—</span>;
+                }
+                return (
+                    <div className="flex flex-wrap gap-2">
+                        {list.map((pos) => (
+                            <span
+                                key={pos}
+                                className="badge-pill bg-slate-800 text-slate-200 border border-slate-700"
+                            >
+                                {pos}
+                            </span>
+                        ))}
+                    </div>
+                );
+            };
+
+            const renderEditRow = (isNew) => (
+                <tr className="glass border border-slate-800/60">
+                    <td className="px-3 py-3 align-top">
+                        <input
+                            type="text"
+                            value={draft.id}
+                            onChange={(e) => handleDraftChange('id', e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="ID (optional)"
+                            disabled={saving}
+                        />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <input
+                            type="text"
+                            value={draft.name}
+                            onChange={(e) => handleDraftChange('name', e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="Display name"
+                            disabled={saving}
+                        />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <input
+                            type="text"
+                            value={draft.firstName}
+                            onChange={(e) => handleDraftChange('firstName', e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="First"
+                            disabled={saving}
+                        />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <input
+                            type="text"
+                            value={draft.lastName}
+                            onChange={(e) => handleDraftChange('lastName', e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="Last"
+                            disabled={saving}
+                        />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <div className="flex flex-wrap gap-2">
+                            {positionsList.map((pos) => {
+                                const active = draft.positions.includes(pos);
+                                return (
+                                    <button
+                                        type="button"
+                                        key={pos}
+                                        onClick={() => togglePosition(pos)}
+                                        disabled={saving}
+                                        className={`text-xs px-3 py-1.5 rounded-full border transition ${
+                                            active
+                                                ? 'bg-cyan-500/30 border-cyan-400/60 text-cyan-100'
+                                                : 'bg-slate-900/70 border-slate-700 text-slate-300 hover:border-cyan-400/60 hover:text-cyan-100'
+                                        }`}
+                                    >
+                                        {pos}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </td>
+                    <td className="px-3 py-3 align-top text-center">
+                        <label className="inline-flex items-center gap-2 text-xs text-slate-300">
+                            <input
+                                type="checkbox"
+                                checked={draft.isManager}
+                                onChange={(e) => handleDraftChange('isManager', e.target.checked)}
+                                className="accent-cyan-500"
+                                disabled={saving}
+                            />
+                            Manager
+                        </label>
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                        <div className="flex flex-wrap gap-2 justify-end">
+                            <button
+                                type="button"
+                                onClick={handleSubmit}
+                                disabled={saving}
+                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-xs font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
+                            >
+                                {saving ? 'Saving...' : isNew ? 'Add' : 'Save'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleCancel}
+                                disabled={saving}
+                                className="px-4 py-2 rounded-xl border border-slate-700 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-60"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            );
+
+            return (
+                <div className="glass rounded-2xl shadow-xl p-6 border border-slate-800/40 animate-slide-in">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                            <div className="flex items-center gap-2">
+                                <h2 className="text-2xl font-bold text-slate-100">Crew Database</h2>
+                                <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
+                                    {records.length} teammates
+                                </span>
+                            </div>
+                            <p className="text-sm text-slate-400 mt-1">
+                                Manage the roster synced to the <code>Coworkers</code> sheet. This tab will be created automatically if it is missing.
+                            </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                onClick={onRefresh}
+                                className="px-4 py-2 rounded-xl border border-slate-700 text-slate-200 hover:border-cyan-500/60 transition text-sm"
+                                disabled={saving}
+                            >
+                                <i className="fas fa-rotate mr-2"></i>
+                                Refresh
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleStartCreate}
+                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
+                                disabled={saving}
+                            >
+                                <i className="fas fa-user-plus mr-2"></i>
+                                Add Coworker
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="mt-6">
+                        <input
+                            type="search"
+                            value={filter}
+                            onChange={(e) => setFilter(e.target.value)}
+                            className="w-full px-4 py-2.5 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            placeholder="Search by name, position, or ID..."
+                            disabled={saving && !editingKey}
+                        />
+                    </div>
+
+                    {message && (
+                        <div
+                            className={`mt-4 rounded-xl px-4 py-3 text-sm border ${
+                                message.type === 'success'
+                                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                                    : 'border-rose-500/40 bg-rose-500/10 text-rose-200'
+                            }`}
+                        >
+                            {message.text}
+                        </div>
+                    )}
+
+                    <div className="mt-6 overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                            <thead>
+                                <tr className="text-left text-slate-400 uppercase text-xs tracking-widest">
+                                    <th className="px-3 py-2 font-medium">ID</th>
+                                    <th className="px-3 py-2 font-medium">Display Name</th>
+                                    <th className="px-3 py-2 font-medium">First</th>
+                                    <th className="px-3 py-2 font-medium">Last</th>
+                                    <th className="px-3 py-2 font-medium">Positions</th>
+                                    <th className="px-3 py-2 font-medium text-center">Manager</th>
+                                    <th className="px-3 py-2 font-medium text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/40">
+                                {editingKey === 'new' && renderEditRow(true)}
+                                {filteredRecords.map((record) => {
+                                    const key = record.id || `row-${record.rowIndex}`;
+                                    const isEditing = editingKey === key;
+                                    if (isEditing) {
+                                        return (
+                                            <React.Fragment key={key}>
+                                                {renderEditRow(false)}
+                                            </React.Fragment>
+                                        );
+                                    }
+                                    return (
+                                        <tr key={key} className="hover:bg-slate-900/40 transition">
+                                            <td className="px-3 py-3 text-slate-300">{record.id || <span className="text-xs text-slate-500">—</span>}</td>
+                                            <td className="px-3 py-3 text-slate-100 font-medium flex items-center gap-2">
+                                                {record.name || <span className="text-xs text-slate-500">Unnamed</span>}
+                                                {record.isSelf && (
+                                                    <span className="badge-pill bg-cyan-500/30 text-cyan-100 border border-cyan-400/40">You</span>
+                                                )}
+                                            </td>
+                                            <td className="px-3 py-3 text-slate-300">{record.firstName || <span className="text-xs text-slate-500">—</span>}</td>
+                                            <td className="px-3 py-3 text-slate-300">{record.lastName || <span className="text-xs text-slate-500">—</span>}</td>
+                                            <td className="px-3 py-3">{renderPositionsBadges(record)}</td>
+                                            <td className="px-3 py-3 text-center">
+                                                {record.isManager ? (
+                                                    <span className="badge-pill bg-amber-500/20 text-amber-100 border border-amber-400/40">Manager</span>
+                                                ) : (
+                                                    <span className="text-xs text-slate-500">—</span>
+                                                )}
+                                            </td>
+                                            <td className="px-3 py-3">
+                                                <div className="flex items-center justify-end gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleStartEdit(record)}
+                                                        className="px-3 py-2 rounded-xl border border-slate-700 text-xs text-slate-200 hover:border-cyan-500/50 hover:text-cyan-100 transition"
+                                                        disabled={saving}
+                                                    >
+                                                        <i className="fas fa-pen mr-2"></i>
+                                                        Edit
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleDelete(record)}
+                                                        className="px-3 py-2 rounded-xl border border-rose-500/40 text-xs text-rose-200 hover:bg-rose-500/20 transition"
+                                                        disabled={saving}
+                                                    >
+                                                        <i className="fas fa-trash mr-2"></i>
+                                                        Delete
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                                {!filteredRecords.length && editingKey !== 'new' && (
+                                    <tr>
+                                        <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                                            No coworkers match your search.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             );
@@ -1733,7 +2108,7 @@
             }, [shifts, chartSpan]);
 
             useEffect(() => {
-                if (!window.Chart || !lineRef.current) return;
+                if (!lineRef.current) return;
 
                 const labels = recentShifts.map((shift) => new Date(shift.data.date).toLocaleDateString());
                 const hourlySeries = recentShifts.map((shift) => shift.data.summary?.hourly || 0);
@@ -1802,7 +2177,7 @@
             }, [recentShifts]);
 
             useEffect(() => {
-                if (!window.Chart || !barRef.current) return;
+                if (!barRef.current) return;
 
                 const ctx = barRef.current.getContext('2d');
                 if (barChartRef.current) {
@@ -2033,6 +2408,16 @@
                 label: 'Shift',
             },
         };
+
+        const SHIFT_FORM_PAGE_DEFS = [
+            { key: 'overview', label: 'Overview', icon: 'fa-chart-simple' },
+            { key: 'timings', label: 'Timings', icon: 'fa-clock' },
+            { key: 'cuts', label: 'Cuts', icon: 'fa-layer-group' },
+            { key: 'crew', label: 'Crew', icon: 'fa-people-group' },
+            { key: 'parties', label: 'Parties', icon: 'fa-martini-glass-citrus' },
+            { key: 'enhancements', label: 'Enhancements', icon: 'fa-sliders' },
+            { key: 'drinking', label: 'Drinks', icon: 'fa-wine-glass' },
+        ];
 
         const DEFAULT_SHIFT_TEMPLATE = {
             id: '',
@@ -2816,14 +3201,7 @@
                 [shift]
             );
             const [formData, setFormData] = useState(initialFormSnapshot);
-            const [panelOpen, setPanelOpen] = useState({
-                timings: false,
-                cuts: false,
-                coworkers: false,
-                parties: false,
-                enhancements: false,
-                drinking: false,
-            });
+            const [activePage, setActivePage] = useState(SHIFT_FORM_PAGE_DEFS[0].key);
             const [sectionOpen, setSectionOpen] = useState({
                 wage: false,
                 overtime: false,
@@ -2839,6 +3217,7 @@
             const [partySnapshots, setPartySnapshots] = useState({});
             const [expandedCrewRows, setExpandedCrewRows] = useState({});
             const shiftTypeDropdownRef = useRef(null);
+            const dateInputRef = useRef(null);
             const bartenderDirectory = useMemo(() => {
                 if (!coworkerDirectory.length) return [];
                 return coworkerDirectory.filter((member) => {
@@ -2885,6 +3264,7 @@
                 setPartySnapshots({});
                 setExpandedCrewRows({});
                 setSectionOpen({ wage: false, overtime: false, chump: false });
+                setActivePage(SHIFT_FORM_PAGE_DEFS[0].key);
             }, [initialFormSnapshot]);
 
             useEffect(() => {
@@ -2915,10 +3295,6 @@
                     return { ...prev, cuts: nextCuts };
                 });
             }, [formData.type, Object.keys(formData.parties || {}).join('|')]);
-
-            const togglePanel = (panel) => {
-                setPanelOpen((prev) => ({ ...prev, [panel]: !prev[panel] }));
-            };
 
             const recalcWageTotals = (draft) => {
                 if (!draft || !draft.wage) return;
@@ -3486,7 +3862,7 @@
 
                 setPartySnapshots((prev) => ({ ...prev, [partyId]: null }));
                 setExpandedParties((prev) => ({ ...prev, [partyId]: true }));
-                setPanelOpen((prev) => ({ ...prev, parties: true }));
+                setActivePage('parties');
             };
 
             const handleAddCut = () => {
@@ -3505,7 +3881,7 @@
                 });
                 setCutSnapshots((prev) => ({ ...prev, [cutKey]: null }));
                 setExpandedCuts((prev) => ({ ...prev, [cutKey]: true }));
-                setPanelOpen((prev) => ({ ...prev, cuts: true }));
+                setActivePage('cuts');
             };
 
             const togglePartyDetails = (partyId) => {
@@ -3738,7 +4114,7 @@
                     next.drinking.items.push({ name: '', code: '', abv: '', oz: '', sbe: '', type: '', quantity: 1 });
                     return next;
                 });
-                setPanelOpen((prev) => ({ ...prev, drinking: true }));
+                setActivePage('drinking');
             };
 
             const handleSubmit = (e) => {
@@ -3832,6 +4208,29 @@
             const shiftTypeMeta = SHIFT_TYPE_META[formData.type] || SHIFT_TYPE_META.default;
             const headerIcon = shiftTypeMeta.icon || (shiftTypeMode === 'auto' ? 'fa-circle-half-stroke' : 'fa-circle-question');
             const headerGradient = 'from-slate-950 via-slate-900 to-slate-950';
+            const shiftDateObject = useMemo(() => {
+                if (!formData.date) return null;
+                const parts = formData.date.split('-').map(Number);
+                if (parts.length !== 3) return null;
+                const [year, month, day] = parts;
+                if (!year || !month || !day) return null;
+                const parsed = new Date(year, month - 1, day);
+                return Number.isNaN(parsed.getTime()) ? null : parsed;
+            }, [formData.date]);
+            const formattedShiftDate = shiftDateObject
+                ? shiftDateObject.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                : 'Set Date';
+            const weekdayLabel = shiftDateObject
+                ? shiftDateObject.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase()
+                : 'SET DATE';
+            const openDatePicker = () => {
+                if (!dateInputRef.current) return;
+                if (typeof dateInputRef.current.showPicker === 'function') {
+                    dateInputRef.current.showPicker();
+                } else {
+                    dateInputRef.current.click();
+                }
+            };
             const partyCount = Object.keys(formData.parties || {}).length;
             const bartenderCount = (formData.coworkers?.bartenders || []).length;
             const serverCount = (formData.coworkers?.servers || []).length;
@@ -3842,6 +4241,7 @@
             const quickPanels = [
                 {
                     key: 'cuts',
+                    page: 'cuts',
                     icon: 'fa-chart-pie',
                     label: 'Cuts',
                     metric: Object.keys(formData.cuts || {}).length,
@@ -3849,6 +4249,7 @@
                 },
                 {
                     key: 'parties',
+                    page: 'parties',
                     icon: 'fa-glass-cheers',
                     label: 'Parties',
                     metric: partyCount,
@@ -3856,6 +4257,7 @@
                 },
                 {
                     key: 'coworkers',
+                    page: 'crew',
                     icon: 'fa-people-group',
                     label: 'Crew',
                     metric: coworkerCount,
@@ -3863,6 +4265,7 @@
                 },
                 {
                     key: 'enhancements',
+                    page: 'enhancements',
                     icon: 'fa-sliders',
                     label: 'Enhancements',
                     metric: '',
@@ -3870,6 +4273,7 @@
                 },
                 {
                     key: 'drinking',
+                    page: 'drinking',
                     icon: 'fa-wine-glass',
                     label: 'Drinks',
                     metric: formData.drinking?.items?.length || 0,
@@ -3894,22 +4298,68 @@
                     <div className="glass rounded-3xl shadow-2xl overflow-hidden animate-slide-in border border-slate-800/40">
                         <div className={`bg-gradient-to-r ${headerGradient} px-8 py-6 flex items-center justify-between`}>
                             <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-white text-2xl">
-                                    <i className={`fas ${headerIcon}`}></i>
+                                <div className="relative" ref={shiftTypeDropdownRef}>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShiftTypeMenuOpen((prev) => !prev)}
+                                        className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-white text-2xl hover:bg-white/30 transition focus:outline-none focus:ring-2 focus:ring-cyan-400/80"
+                                        title={shiftTypeLabel}
+                                        aria-label={shiftTypeLabel}
+                                    >
+                                        <i className={`fas ${headerIcon}`}></i>
+                                    </button>
+                                    {shiftTypeMenuOpen && (
+                                        <div className="absolute left-0 top-full mt-3 w-48 bg-slate-900/95 border border-slate-700 rounded-xl shadow-lg backdrop-blur space-y-1 py-2 z-30">
+                                            <button
+                                                type="button"
+                                                onClick={() => selectShiftType('auto')}
+                                                className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                    shiftTypeMode === 'auto' ? 'text-cyan-200' : 'text-slate-200'
+                                                }`}
+                                            >
+                                                Auto (based on times)
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => selectShiftType('day')}
+                                                className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                    shiftTypeMode === 'manual' && formData.type === 'day' ? 'text-cyan-200' : 'text-slate-200'
+                                                }`}
+                                            >
+                                                Day Shift
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => selectShiftType('night')}
+                                                className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                    shiftTypeMode === 'manual' && formData.type === 'night' ? 'text-cyan-200' : 'text-slate-200'
+                                                }`}
+                                            >
+                                                Night Shift
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => selectShiftType('double')}
+                                                className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
+                                                    shiftTypeMode === 'manual' && formData.type === 'double' ? 'text-cyan-200' : 'text-slate-200'
+                                                }`}
+                                            >
+                                                Double Shift
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                                 <div>
-                                    <p className="text-xs uppercase tracking-widest text-white/70">Shift Worksheet</p>
-                                    <h2 className="text-3xl font-semibold text-white">{shift ? 'Edit Shift' : 'Create Shift'}</h2>
-                                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                                        <span className="badge-pill bg-white/15 text-white border border-white/20">
-                                            {shiftTypeMode === 'auto' ? 'Auto Mode' : 'Manual Mode'}
-                                        </span>
-                                        {formData.type && (
-                                            <span className="badge-pill bg-cyan-500/20 text-cyan-100 border border-cyan-400/40">
-                                                {shiftTypeMeta.label}
-                                            </span>
-                                        )}
-                                    </div>
+                                    <p className="text-xs uppercase tracking-[0.4em] text-white/70">{weekdayLabel}</p>
+                                    <button
+                                        type="button"
+                                        onClick={openDatePicker}
+                                        className="mt-1 text-3xl font-semibold text-white flex items-center gap-2 hover:text-cyan-200 transition"
+                                    >
+                                        {formattedShiftDate}
+                                        <i className="fas fa-calendar-alt text-base text-white/60"></i>
+                                    </button>
+                                    <p className="text-sm text-white/60">Shift Worksheet</p>
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
@@ -3927,79 +4377,26 @@
                                 </button>
                             </div>
                         </div>
+                        <input
+                            ref={dateInputRef}
+                            type="date"
+                            value={formData.date}
+                            onChange={(e) => updateFormPath('date', e.target.value)}
+                            className="absolute w-0 h-0 opacity-0 pointer-events-none"
+                            tabIndex={-1}
+                            aria-hidden="true"
+                        />
 
                         <form onSubmit={handleSubmit} className="px-8 py-8 space-y-8">
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                                <div className="lg:col-span-2">
-                                    <label className="text-sm uppercase tracking-wide text-slate-400">Date</label>
-                                    <input
-                                        type="date"
-                                        value={formData.date}
-                                        onChange={(e) => updateFormPath('date', e.target.value)}
-                                        className="mt-2 w-full px-6 py-4 bg-slate-900/60 border border-slate-700 rounded-2xl text-lg focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                        required
-                                    />
-                                </div>
-                                <div ref={shiftTypeDropdownRef}>
-                                    <label className="text-sm uppercase tracking-wide text-slate-400">Shift Type</label>
-                                    <div className="mt-2 relative">
-                                        <button
-                                            type="button"
-                                            onClick={() => setShiftTypeMenuOpen((prev) => !prev)}
-                                            className="w-full px-5 py-4 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm font-medium flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                        >
-                                            <span>{shiftTypeLabel}</span>
-                                            <i className={`fas fa-chevron-${shiftTypeMenuOpen ? 'up' : 'down'} text-slate-500`}></i>
-                                        </button>
-                                        {shiftTypeMenuOpen && (
-                                            <div className="absolute z-20 mt-2 w-full bg-slate-900/95 border border-slate-700 rounded-xl shadow-lg backdrop-blur space-y-1 py-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => selectShiftType('auto')}
-                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
-                                                        shiftTypeMode === 'auto' ? 'text-cyan-200' : 'text-slate-200'
-                                                    }`}
-                                                >
-                                                    Auto (based on times)
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => selectShiftType('day')}
-                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
-                                                        shiftTypeMode === 'manual' && formData.type === 'day' ? 'text-cyan-200' : 'text-slate-200'
-                                                    }`}
-                                                >
-                                                    Day Shift
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => selectShiftType('night')}
-                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
-                                                        shiftTypeMode === 'manual' && formData.type === 'night' ? 'text-cyan-200' : 'text-slate-200'
-                                                    }`}
-                                                >
-                                                    Night Shift
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => selectShiftType('double')}
-                                                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 ${
-                                                        shiftTypeMode === 'manual' && formData.type === 'double' ? 'text-cyan-200' : 'text-slate-200'
-                                                    }`}
-                                                >
-                                                    Double Shift
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div className="flex flex-col lg:flex-row gap-8">
+                                <div className="flex-1 space-y-8">
+                                    {activePage === 'overview' && (
+                                        <>
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div className="md:col-span-1">
                                     <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
                                         Start Time
-                                        <button type="button" onClick={() => togglePanel('timings')} className="text-slate-500 hover:text-cyan-300">
+                                          <button type="button" onClick={() => setActivePage('timings')} className="text-slate-500 hover:text-cyan-300">
                                             <i className="fas fa-clock"></i>
                                         </button>
                                     </label>
@@ -4023,7 +4420,7 @@
                                 <div className="md:col-span-1">
                                     <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
                                         End Time
-                                        <button type="button" onClick={() => togglePanel('timings')} className="text-slate-500 hover:text-cyan-300">
+                                          <button type="button" onClick={() => setActivePage('timings')} className="text-slate-500 hover:text-cyan-300">
                                             <i className="fas fa-business-time"></i>
                                         </button>
                                     </label>
@@ -4061,7 +4458,7 @@
                                         </button>
                                         <button
                                             type="button"
-                                            onClick={() => togglePanel('cuts')}
+                                              onClick={() => setActivePage('cuts')}
                                             className="icon-button text-slate-500 hover:text-cyan-300"
                                             title="Open cuts"
                                         >
@@ -4114,41 +4511,50 @@
                                             {chumpStatus === 'recorded' ? 'Logged' : chumpStatus === 'pending' ? 'Result Pending' : 'Not Played'}
                                         </span>
                                     </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => togglePanel('enhancements')}
-                                        className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
-                                    >
-                                        Manage Enhancements
-                                        <i className="fas fa-arrow-right"></i>
-                                    </button>
+                                      <button
+                                          type="button"
+                                          onClick={() => setActivePage('enhancements')}
+                                          className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
+                                      >
+                                          Manage Enhancements
+                                          <i className="fas fa-arrow-right"></i>
+                                      </button>
                                 </div>
                             </div>
 
                             <div className="flex flex-wrap gap-3">
                                 {quickPanels.map((panel) => (
-                                    <button
-                                        key={panel.key}
-                                        type="button"
-                                        onClick={() => togglePanel(panel.key)}
-                                        className={`icon-button glass px-4 py-3 rounded-2xl flex items-center gap-3 border border-slate-800/60 ${panelOpen[panel.key] ? 'ring-2 ring-cyan-500/40' : ''}`}
-                                    >
+                                <button
+                                    key={panel.key}
+                                    type="button"
+                                    onClick={() => setActivePage(panel.page)}
+                                    className={`icon-button glass px-4 py-3 rounded-2xl flex items-center gap-3 border border-slate-800/60 ${
+                                        activePage === panel.page ? 'ring-2 ring-cyan-500/40' : ''
+                                    }`}
+                                >
                                         <div className="relative">
                                             <span className="w-8 h-8 rounded-xl bg-slate-900/70 flex items-center justify-center text-cyan-300">
                                                 <i className={`fas ${panel.icon}`}></i>
                                             </span>
-                                            <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full shadow ${statusBadgeClass(panel.status)}`}></span>
+                                        <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full shadow ${statusBadgeClass(panel.status)}`}></span>
                                         </div>
                                         <div className="text-left">
                                             <p className="text-xs uppercase tracking-wider text-slate-400">{panel.label}</p>
                                             <p className="text-sm font-semibold text-slate-200">{panel.metric || '—'}</p>
                                         </div>
-                                        <i className={`fas fa-chevron-${panelOpen[panel.key] ? 'up' : 'down'} text-slate-600`}></i>
+                                    <i
+                                        className={`fas ${
+                                            activePage === panel.page ? 'fa-circle-dot text-cyan-200' : 'fa-arrow-right text-slate-600'
+                                        }`}
+                                    ></i>
                                     </button>
                                 ))}
                                 <button
                                     type="button"
-                                    onClick={handleAddParty}
+                                onClick={() => {
+                                    handleAddParty();
+                                    setActivePage('parties');
+                                }}
                                     className="icon-button glass px-4 py-3 rounded-2xl flex items-center gap-2 text-slate-200 border border-slate-800/60 hover:border-cyan-500/50"
                                 >
                                     <i className="fas fa-plus"></i>
@@ -4156,21 +4562,14 @@
                                 </button>
                             </div>
 
-                            {panelOpen.timings && (
-                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                      <div className="flex items-center justify-between">
-                                          <button
-                                              type="button"
-                                              onClick={() => togglePanel('timings')}
-                                              className="text-lg font-semibold text-slate-100 hover:text-cyan-200 transition flex items-center gap-2"
-                                          >
-                                              Timing Buckets
-                                              <i className={`fas fa-chevron-${panelOpen.timings ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                          </button>
-                                        <button onClick={() => togglePanel('timings')} type="button" className="text-slate-500 hover:text-slate-200">
-                                            <i className="fas fa-xmark"></i>
-                                        </button>
-                                    </div>
+                        </>
+                    )}
+                                    {activePage === 'timings' && (
+                                        <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
+                                            <h3 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+                                                <i className="fas fa-clock text-slate-400"></i>
+                                                Timing Buckets
+                                            </h3>
                                       {['present', 'clock', 'tips', 'working'].map((bucket) => (
                                           <div key={bucket} className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
                                               <div className="md:col-span-1">
@@ -4229,25 +4628,21 @@
                                               </div>
                                           </div>
                                       ))}
-                                </div>
-                            )}
+                                  </div>
+                              )}
 
-                            {panelOpen.cuts && (
+                        {activePage === 'cuts' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('cuts')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            Cuts
-                                            <i className={`fas fa-chevron-${panelOpen.cuts ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
-                                        <button type="button" onClick={handleAddCut} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
-                                            <i className="fas fa-plus"></i>
-                                            Custom Cut
-                                        </button>
-                                    </div>
+                                        <div className="flex items-center justify-between">
+                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                                <i className="fas fa-layer-group text-slate-400"></i>
+                                                Cuts
+                                            </h3>
+                                            <button type="button" onClick={handleAddCut} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
+                                                <i className="fas fa-plus"></i>
+                                                Custom Cut
+                                            </button>
+                                        </div>
                                     <div className="space-y-3">
                                         {Object.entries(formData.cuts || {}).map(([key, cut]) => {
                                             const expanded = !!expandedCuts[key];
@@ -4399,22 +4794,18 @@
                                 </div>
                             )}
 
-                            {panelOpen.parties && (
+                        {activePage === 'parties' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('parties')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            Parties &amp; Events
-                                            <i className={`fas fa-chevron-${panelOpen.parties ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
-                                        <button type="button" onClick={handleAddParty} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
-                                            <i className="fas fa-plus"></i>
-                                            Add Party
-                                        </button>
-                                    </div>
+                                      <div className="flex items-center justify-between">
+                                          <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                              <i className="fas fa-martini-glass-citrus text-slate-400"></i>
+                                              Parties &amp; Events
+                                          </h3>
+                                          <button type="button" onClick={handleAddParty} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
+                                              <i className="fas fa-plus"></i>
+                                              Add Party
+                                          </button>
+                                      </div>
                                     {partyCount === 0 && <p className="text-sm text-slate-500">No parties logged yet.</p>}
                                     <div className="space-y-3">
                                         {Object.entries(formData.parties || {}).map(([id, party], index) => {
@@ -4575,17 +4966,13 @@
                                 </div>
                             )}
 
-                            {panelOpen.coworkers && (
+                        {activePage === 'crew' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
-                                    <div className="flex flex-wrap items-center justify-between gap-3">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('coworkers')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            Crew Knowledge
-                                            <i className={`fas fa-chevron-${panelOpen.coworkers ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
+                                        <div className="flex flex-wrap items-center justify-between gap-3">
+                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                                <i className="fas fa-people-group text-slate-400"></i>
+                                                Crew Knowledge
+                                            </h3>
                                         <div className="flex flex-wrap items-center gap-2">
                                             <button
                                                 type="button"
@@ -5350,19 +5737,15 @@
                                 </div>
                             )}
 
-                            {panelOpen.enhancements && (
+                        {activePage === 'enhancements' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
-                                    <div className="flex items-center justify-between">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('enhancements')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            Enhancements &amp; Adjustments
-                                            <i className={`fas fa-chevron-${panelOpen.enhancements ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
-                                        <div className="text-xs text-slate-500">Group overtime, consideration, swindle</div>
-                                    </div>
+                                        <div className="flex items-center justify-between">
+                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                                <i className="fas fa-sliders text-slate-400"></i>
+                                                Enhancements &amp; Adjustments
+                                            </h3>
+                                            <div className="text-xs text-slate-500">Group overtime, consideration, swindle</div>
+                                        </div>
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
                                             <p className="text-xs uppercase tracking-wider text-slate-500">Wage</p>
@@ -5568,17 +5951,13 @@
                                 </div>
                             )}
 
-                            {panelOpen.drinking && (
+                        {activePage === 'drinking' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <button
-                                            type="button"
-                                            onClick={() => togglePanel('drinking')}
-                                            className="flex items-center gap-2 text-lg font-semibold text-slate-100 hover:text-cyan-200 transition"
-                                        >
-                                            On-Shift Drinking
-                                            <i className={`fas fa-chevron-${panelOpen.drinking ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                        </button>
+                                        <div className="flex items-center justify-between">
+                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
+                                                <i className="fas fa-wine-glass text-slate-400"></i>
+                                                On-Shift Drinking
+                                            </h3>
                                         <button type="button" onClick={handleAddDrinkingItem} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
                                             <i className="fas fa-plus"></i>
                                             Add Item
@@ -5624,43 +6003,95 @@
                                                 className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
                                                 placeholder="Qty"
                                             />
-                                            <input
-                                                type="number"
-                                                step="0.01"
-                                                value={item.sbe || ''}
-                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.sbe`, e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="SBE"
-                                            />
-                                        </div>
+                                              <input
+                                                  type="number"
+                                                  step="0.01"
+                                                  value={item.sbe || ''}
+                                                  onChange={(e) => updateFormPath(`drinking.items.${idx}.sbe`, e.target.value)}
+                                                  className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                                                  placeholder="SBE"
+                                              />
+                                              <div className="flex items-center justify-end gap-2 md:col-span-6">
+                                                  <button
+                                                      type="button"
+                                                      onClick={() => duplicateDrinkingItem(idx)}
+                                                      className="text-xs px-3 py-1.5 border border-slate-700 text-slate-300 rounded-lg hover:border-cyan-500/40"
+                                                  >
+                                                      Duplicate
+                                                  </button>
+                                                  <button
+                                                      type="button"
+                                                      onClick={() => handleDeleteDrinkingItem(idx)}
+                                                      className="text-xs px-3 py-1.5 border border-rose-500/40 text-rose-300 rounded-lg hover:bg-rose-500/10"
+                                                  >
+                                                      Remove
+                                                  </button>
+                                              </div>
+                                          </div>
                                     ))}
                                 </div>
                             )}
 
-                            <div className="flex flex-col gap-4">
-                                <textarea
-                                    value={formData.meta?.notes || ''}
-                                    onChange={(e) => updateFormPath('meta.notes', e.target.value)}
-                                    className="w-full min-h-[120px] px-4 py-3 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm"
-                                    placeholder="Context, observations, weather, promotions..."
-                                ></textarea>
-                                <div className="flex gap-4">
+                        </div>
+                        <aside className="w-full lg:w-64 space-y-3">
+                            {SHIFT_FORM_PAGE_DEFS.map((page) => {
+                                const isActive = activePage === page.key;
+                                return (
                                     <button
-                                        type="submit"
-                                        className="flex-1 bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-8 py-4 rounded-2xl font-semibold text-lg shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 transition"
-                                    >
-                                        <i className="fas fa-save mr-3"></i>
-                                        Save Shift
-                                    </button>
-                                    <button
+                                        key={page.key}
                                         type="button"
-                                        onClick={onCancel}
-                                        className="px-6 py-4 rounded-2xl border border-slate-700 text-slate-300 hover:border-slate-500"
+                                        onClick={() => setActivePage(page.key)}
+                                        className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl border transition ${
+                                            isActive
+                                                ? 'border-cyan-500/60 bg-cyan-500/10 text-cyan-100'
+                                                : 'border-slate-800/60 bg-slate-900/60 text-slate-300 hover:border-slate-700'
+                                        }`}
                                     >
-                                        Cancel
+                                        <span className="flex items-center gap-3">
+                                            <span
+                                                className={`w-9 h-9 rounded-xl flex items-center justify-center ${
+                                                    isActive ? 'bg-cyan-500/30 text-cyan-100' : 'bg-slate-900/80 text-slate-500'
+                                                }`}
+                                            >
+                                                <i className={`fas ${page.icon}`}></i>
+                                            </span>
+                                            <span className="font-medium">{page.label}</span>
+                                        </span>
+                                        <i className={`fas fa-chevron-right text-xs ${isActive ? 'text-cyan-300' : 'text-slate-500'}`}></i>
                                     </button>
-                                </div>
-                            </div>
+                                );
+                            })}
+                        </aside>
+                    </div>
+
+                    {activePage === 'overview' && (
+                        <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-3">
+                            <label className="text-xs uppercase tracking-widest text-slate-500">Shift Notes</label>
+                            <textarea
+                                value={formData.meta?.notes || ''}
+                                onChange={(e) => updateFormPath('meta.notes', e.target.value)}
+                                className="w-full min-h-[120px] px-4 py-3 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm"
+                                placeholder="Context, observations, weather, promotions..."
+                            ></textarea>
+                        </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-4 justify-end">
+                        <button
+                            type="submit"
+                            className="flex-1 min-w-[180px] bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-8 py-4 rounded-2xl font-semibold text-lg shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 transition"
+                        >
+                            <i className="fas fa-save mr-3"></i>
+                            Save Shift
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onCancel}
+                            className="px-6 py-4 rounded-2xl border border-slate-700 text-slate-300 hover:border-slate-500"
+                        >
+                            Cancel
+                        </button>
+                    </div>
                         </form>
                     </div>
                 </div>
@@ -5784,9 +6215,4 @@
                 </div>
             );
         }
-
-        // Render App
-        ReactDOM.render(<App />, document.getElementById('root'));
-    </script>
-</body>
-</html>
+export default App;

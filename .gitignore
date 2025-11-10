@@ -1,2 +1,5 @@
-.tip-pool-server.log
+node_modules
+dist
+*.log
+.bar-tracker-server.log
 config.json
