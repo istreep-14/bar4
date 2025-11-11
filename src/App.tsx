@@ -71,14 +71,15 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                 sheetName: 'Shifts',
             });
             const [showConfig, setShowConfig] = useState(true);
-              const [loading, setLoading] = useState(false);
-              const [error, setError] = useState(null);
-              const [serverStatus, setServerStatus] = useState({
-                  state: 'checking',
-                  message: `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
-              });
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+            const [serverStatus, setServerStatus] = useState({
+                state: 'checking',
+                message: `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
+            });
             const [coworkerDirectory, setCoworkerDirectory] = useState([]);
             const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+            const [notice, setNotice] = useState(null);
 
             useEffect(() => {
                 if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) {
@@ -326,33 +327,40 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                 return () => clearTimeout(timer);
             }, [authSession, refreshToken]);
 
-            const loadShifts = useCallback(async () => {
-                if (!config.spreadsheetId || !isAuthenticated) return;
-                
-                setLoading(true);
-                setError(null);
-                try {
-                    const range = `${config.sheetName}!A2:F`;
-                    const response = await sheetsAPI.readData(config.spreadsheetId, range);
-                    const values = response || [];
-                    const loadedShifts = values
-                        .map((row, index) => deserializeShiftRow(index + 2, row))
-                        .filter(Boolean);
-                    setShifts(loadedShifts);
-                    storeCachedShifts(loadedShifts);
-                } catch (error) {
-                    console.warn('Failed to fetch shifts from Sheets', error);
-                    const cached = loadCachedShifts();
-                    if (cached && cached.length) {
-                        setShifts(cached);
-                        setError('Offline mode: showing cached shifts.');
-                    } else {
-                        setError('Failed to load shifts: ' + error.message);
-                    }
-                } finally {
-                    setLoading(false);
+        const loadShifts = useCallback(async () => {
+            if (!config.spreadsheetId || !isAuthenticated) return;
+
+            setLoading(true);
+            setError(null);
+            setNotice(null);
+            try {
+                const range = `${config.sheetName}!A2:F`;
+                const response = await sheetsAPI.readData(config.spreadsheetId, range);
+                const values = response || [];
+                const loadedShifts = values
+                    .map((row, index) => deserializeShiftRow(index + 2, row))
+                    .filter(Boolean);
+                setShifts(loadedShifts);
+                storeCachedShifts(loadedShifts);
+                setNotice(null);
+            } catch (error) {
+                console.warn('Failed to fetch shifts from Sheets', error);
+                const cached = loadCachedShifts();
+                if (cached && cached.length) {
+                    setShifts(cached);
+                    setNotice(
+                        getSheetsErrorMessage(
+                            error,
+                            'Unable to reach Google Sheets. Showing cached shifts.'
+                        )
+                    );
+                } else {
+                    setError(getSheetsErrorMessage(error, 'Failed to load shifts.'));
                 }
-            }, [config.sheetName, config.spreadsheetId, isAuthenticated]);
+            } finally {
+                setLoading(false);
+            }
+        }, [config.sheetName, config.spreadsheetId, isAuthenticated]);
 
             const ensureCoworkerSheetExists = useCallback(async () => {
                 if (!config.spreadsheetId || !isAuthenticated) return null;
@@ -886,7 +894,23 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                             </div>
                         )}
 
-                        {/* Error Alert */}
+                          {/* Notice Banner */}
+                          {notice && (
+                              <div className="glass rounded-xl p-4 mb-6 border border-cyan-500/30 bg-cyan-500/10 animate-slide-in">
+                                  <div className="flex items-center gap-3">
+                                      <i className="fas fa-info-circle text-cyan-300 text-xl"></i>
+                                      <div className="flex-1">
+                                          <p className="text-cyan-200 font-medium">Heads Up</p>
+                                          <p className="text-cyan-200/90 text-sm">{notice}</p>
+                                      </div>
+                                      <button onClick={() => setNotice(null)} className="text-cyan-300 hover:text-cyan-100">
+                                          <i className="fas fa-times"></i>
+                                      </button>
+                                  </div>
+                              </div>
+                          )}
+
+                          {/* Error Alert */}
                         {error && (
                             <div className="glass rounded-xl p-4 mb-6 border border-red-500/30 bg-red-500/10 animate-slide-in">
                                 <div className="flex items-center gap-3">
