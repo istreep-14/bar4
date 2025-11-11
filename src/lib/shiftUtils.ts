@@ -718,8 +718,38 @@ export function normalizeCrewData(raw) {
 }
 
 export function normalizeShiftPayload(shift) {
-  if (!shift) return null;
-  const cloned = JSON.parse(JSON.stringify(shift));
+  if (shift === null || shift === undefined) return null;
+
+  let primitiveValue = null;
+  let base = shift;
+
+  if (typeof base !== 'object' || base === null) {
+    primitiveValue = base;
+    base = {};
+  } else if (Array.isArray(base)) {
+    primitiveValue = base;
+    base = {};
+  }
+
+  const cloned = JSON.parse(JSON.stringify(base));
+
+  if (primitiveValue !== null && primitiveValue !== undefined) {
+    const numeric = Number(primitiveValue);
+    cloned.tips = cloned.tips || {};
+    if (cloned.tips._total === undefined || cloned.tips._total === null || cloned.tips._total === '') {
+      cloned.tips._total = primitiveValue;
+    }
+    cloned.earnings = cloned.earnings || {};
+    if (Number.isFinite(numeric)) {
+      if (cloned.earnings.tips === undefined || cloned.earnings.tips === null) {
+        cloned.earnings.tips = numeric;
+      }
+      if (cloned.earnings.total === undefined || cloned.earnings.total === null) {
+        cloned.earnings.total = numeric;
+      }
+    }
+  }
+
   cloned.coworkers = normalizeCrewData(cloned.coworkers);
   delete cloned.coworkerStats;
 
