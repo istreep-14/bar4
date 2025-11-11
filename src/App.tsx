@@ -8,14 +8,12 @@ import {
   loadStoredAuthToken,
   storeAuthToken,
   clearStoredAuthToken,
-  loadCachedShifts,
-  storeCachedShifts,
-  loadPendingQueue,
-  storePendingQueue,
   CONFIG_STORAGE_KEY,
   REMOTE_CONFIG_PATH,
   isOnline,
 } from './lib/storage';
+import { useShiftManager } from './hooks/useShiftManager';
+import { getSheetsErrorMessage } from './lib/sheetsHelpers';
 import CrewDatabasePage from './pages/CrewDatabasePage';
 import DashboardPage from './pages/DashboardPage';
 import ShiftEntryPage from './pages/ShiftEntryPage';
@@ -29,15 +27,6 @@ const VIEW_MODES = Object.freeze({
 });
 
 const CREW_POSITION_OPTIONS = ['Bartender', 'Server', 'Expo', 'Busser', 'Hostess', 'Door'];
-const COWORKER_SHEET_NAME = 'Coworkers';
-
-const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.') => {
-  if (!error) return fallback;
-  if (typeof error === 'string') return error;
-  if (error?.result?.error?.message) return error.result.error.message;
-  if (error?.message) return error.message;
-  return fallback;
-};
 
 function serializeShiftForRow(shift) {
             const totalEarnings = parseFloat(shift?.earnings?.total ?? 0) || 0;
@@ -128,12 +117,9 @@ function serializeShiftForRow(shift) {
             const navigate = useNavigate();
             const location = useLocation();
             const [view, setViewState] = useState(VIEW_MODES.DASHBOARD);
-            const [shifts, setShifts] = useState(() => loadCachedShifts() || []);
-            const [currentShift, setCurrentShift] = useState(null);
             const [isAuthenticated, setIsAuthenticated] = useState(false);
             const [authSession, setAuthSession] = useState(() => loadStoredAuthToken());
             const authSessionRef = useRef(authSession);
-            const coworkerSheetMetaRef = useRef({ ensured: false, sheetId: null });
             const [config, setConfig] = useState({
                 clientId: '',
                 apiKey: '',
@@ -147,8 +133,29 @@ function serializeShiftForRow(shift) {
                   state: 'checking',
                   message: `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
               });
-            const [coworkerDirectory, setCoworkerDirectory] = useState([]);
             const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+            const {
+                shifts,
+                currentShift,
+                setCurrentShift,
+                coworkerDirectory,
+                loadShifts,
+                loadCoworkerDirectory,
+                upsertCoworkerRecord,
+                deleteCoworkerRecord,
+                syncPendingShifts,
+                saveShift: saveShiftInternal,
+                deleteShift: deleteShiftInternal,
+                createShiftDraft,
+                createShiftDraftForDate,
+                getShiftById,
+            } = useShiftManager({
+                config,
+                isAuthenticated,
+                setLoading,
+                setError,
+            });
 
             const setView = useCallback(
                 (nextView, options = {}) => {
@@ -209,6 +216,82 @@ function serializeShiftForRow(shift) {
             useEffect(() => {
                 authSessionRef.current = authSession;
             }, [authSession]);
+
+            useEffect(() => {
+                if (!isAuthenticated || !config.spreadsheetId) return;
+                loadShifts();
+            }, [isAuthenticated, config.spreadsheetId, loadShifts]);
+
+            useEffect(() => {
+                if (!isAuthenticated || !config.spreadsheetId) return;
+                loadCoworkerDirectory();
+            }, [isAuthenticated, config.spreadsheetId, loadCoworkerDirectory]);
+
+            useEffect(() => {
+                syncPendingShifts();
+            }, [syncPendingShifts]);
+
+            useEffect(() => {
+                const handleOnline = () => {
+                    syncPendingShifts();
+                    refreshToken('silent');
+                };
+                window.addEventListener('online', handleOnline);
+                return () => {
+                    window.removeEventListener('online', handleOnline);
+                };
+            }, [syncPendingShifts, refreshToken]);
+
+            const startNewShift = useCallback(
+                (seed = {}) => {
+                    createShiftDraft(seed);
+                    setView(VIEW_MODES.SHIFT_CREATE);
+                },
+                [createShiftDraft, setView]
+            );
+
+            const startNewShiftForDate = useCallback(
+                (dateKey) => {
+                    createShiftDraftForDate(dateKey);
+                    setView(VIEW_MODES.SHIFT_CREATE);
+                },
+                [createShiftDraftForDate, setView]
+            );
+
+            const saveShift = useCallback(
+                async (shiftData) => {
+                    await saveShiftInternal(shiftData);
+                    setView(VIEW_MODES.DASHBOARD);
+                },
+                [saveShiftInternal, setView]
+            );
+
+            const deleteShift = useCallback(
+                async (shiftId) => {
+                    if (!confirm('Are you sure you want to delete this shift?')) return;
+                    await deleteShiftInternal(shiftId);
+                    if (view === VIEW_MODES.SHIFT_VIEW && currentShift?.id === shiftId) {
+                        setView(VIEW_MODES.DASHBOARD);
+                    }
+                },
+                [deleteShiftInternal, view, currentShift, setView]
+            );
+
+            const editShift = useCallback(
+                (shift) => {
+                    setCurrentShift(shift.data);
+                    setView(VIEW_MODES.SHIFT_EDIT, { shiftId: shift?.id });
+                },
+                [setCurrentShift, setView]
+            );
+
+            const viewShift = useCallback(
+                (shift) => {
+                    setCurrentShift(shift.data);
+                    setView(VIEW_MODES.SHIFT_VIEW, { shiftId: shift?.id });
+                },
+                [setCurrentShift, setView]
+            );
 
             const handleTokenEvent = useCallback(
                 (tokenInfo) => {
@@ -444,452 +527,6 @@ function serializeShiftForRow(shift) {
                 return () => clearTimeout(timer);
             }, [authSession, refreshToken]);
 
-            const loadShifts = useCallback(async () => {
-                if (!config.spreadsheetId || !isAuthenticated) return;
-                
-                setLoading(true);
-                setError(null);
-                try {
-                    const range = `${config.sheetName}!A2:F`;
-                    const response = await sheetsAPI.readData(config.spreadsheetId, range);
-                    const values = response || [];
-                    const loadedShifts = values
-                        .map((row, index) => deserializeShiftRow(index + 2, row))
-                        .filter(Boolean);
-                    setShifts(loadedShifts);
-                    storeCachedShifts(loadedShifts);
-                } catch (error) {
-                    console.warn('Failed to fetch shifts from Sheets', error);
-                    const cached = loadCachedShifts();
-                    if (cached && cached.length) {
-                        setShifts(cached);
-                        setError('Offline mode: showing cached shifts.');
-                    } else {
-                        setError('Failed to load shifts: ' + error.message);
-                    }
-                } finally {
-                    setLoading(false);
-                }
-            }, [config.sheetName, config.spreadsheetId, isAuthenticated]);
-
-            const ensureCoworkerSheetExists = useCallback(async () => {
-                if (!config.spreadsheetId || !isAuthenticated) return null;
-                if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
-                    throw new Error('Google Sheets client is not ready yet. Try reconnecting Google Sheets.');
-                }
-
-                const cache = coworkerSheetMetaRef.current || { ensured: false, sheetId: null };
-                if (cache.ensured) {
-                    return cache.sheetId ?? null;
-                }
-
-                try {
-                    const spreadsheet = await gapi.client.sheets.spreadsheets.get({
-                        spreadsheetId: config.spreadsheetId,
-                        includeGridData: false,
-                    });
-                    const existing = spreadsheet.result?.sheets?.find(
-                        (sheet) => sheet.properties?.title === COWORKER_SHEET_NAME
-                    );
-                    if (existing) {
-                        const sheetId = existing.properties?.sheetId ?? null;
-                        coworkerSheetMetaRef.current = { ensured: true, sheetId };
-                        return sheetId;
-                    }
-                } catch (error) {
-                    throw new Error(getSheetsErrorMessage(error, 'Unable to inspect spreadsheet for coworker tab.'));
-                }
-
-                try {
-                    const addResponse = await gapi.client.sheets.spreadsheets.batchUpdate({
-                        spreadsheetId: config.spreadsheetId,
-                        resource: {
-                            requests: [
-                                {
-                                    addSheet: {
-                                        properties: {
-                                            title: COWORKER_SHEET_NAME,
-                                            tabColor: { red: 0.129, green: 0.231, blue: 0.541 },
-                                        },
-                                    },
-                                },
-                            ],
-                        },
-                    });
-                    const newSheetId =
-                        addResponse.result?.replies?.[0]?.addSheet?.properties?.sheetId ?? null;
-                    await gapi.client.sheets.spreadsheets.values.update({
-                        spreadsheetId: config.spreadsheetId,
-                        range: `${COWORKER_SHEET_NAME}!A1:F1`,
-                        valueInputOption: 'RAW',
-                        resource: {
-                            values: [['ID', 'Name', 'First', 'Last', 'Positions', 'Manager']],
-                        },
-                    });
-                    coworkerSheetMetaRef.current = { ensured: true, sheetId: newSheetId };
-                    return newSheetId;
-                } catch (error) {
-                    coworkerSheetMetaRef.current = { ensured: false, sheetId: null };
-                    throw new Error(getSheetsErrorMessage(error, 'Unable to create Coworkers sheet.'));
-                }
-            }, [config.spreadsheetId, isAuthenticated]);
-
-            const loadCoworkerDirectory = useCallback(async () => {
-                if (!config.spreadsheetId || !isAuthenticated) return;
-                try {
-                    await ensureCoworkerSheetExists();
-                    const rows = await sheetsAPI.readData(config.spreadsheetId, `${COWORKER_SHEET_NAME}!A2:F`);
-                    const directory = (rows || [])
-                        .map((row, index) => {
-                            const [
-                                trappeId = '',
-                                name = '',
-                                firstName = '',
-                                lastName = '',
-                                positionsRaw = '',
-                                managerRaw = '',
-                            ] = row || [];
-                            const rowIndex = index + 2;
-                            const fallbackName = [firstName, lastName].filter(Boolean).join(' ');
-                            const normalizedName = (name || fallbackName || '').trim();
-                            if (!normalizedName) return null;
-                            const positions = (positionsRaw || '')
-                                .split(/[,/]/)
-                                .map((token) => token.trim())
-                                .filter(Boolean);
-                            const positionsNormalized = positions.map((p) => p.toLowerCase());
-                            const managerFlag = String(managerRaw || '').trim().toLowerCase();
-                            const isManager = managerFlag === 'true' || managerFlag === 'yes' || managerFlag === '1';
-                            const isSelf =
-                                normalizedName.toLowerCase() === 'ian' ||
-                                (firstName || '').trim().toLowerCase() === 'ian';
-                            return {
-                                rowIndex,
-                                id: trappeId || `coworker_${index}`,
-                                name: normalizedName,
-                                firstName: firstName || '',
-                                lastName: lastName || '',
-                                positions,
-                                positionsNormalized,
-                                isManager,
-                                isSelf,
-                            };
-                        })
-                        .filter(Boolean);
-                    setCoworkerDirectory(directory);
-                    setError((prev) =>
-                        prev && prev.toLowerCase().includes('coworker') ? null : prev
-                    );
-                } catch (directoryError) {
-                    console.warn('Failed to load coworker directory', directoryError);
-                    setCoworkerDirectory([]);
-                    setError(getSheetsErrorMessage(directoryError, 'Failed to load coworker directory.'));
-                }
-            }, [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated]);
-
-            const coworkerRowRange = (rowIndex) => `${COWORKER_SHEET_NAME}!A${rowIndex}:F${rowIndex}`;
-
-            const formatCoworkerForSheet = (draft) => {
-                if (!draft) return null;
-                const firstName = (draft.firstName || '').trim();
-                const lastName = (draft.lastName || '').trim();
-                const displayName = (draft.name || `${firstName} ${lastName}` || '').trim();
-                const positions = Array.isArray(draft.positions)
-                    ? draft.positions.filter(Boolean)
-                    : [];
-                return {
-                    rowIndex: draft.rowIndex || null,
-                    id: (draft.id || '').trim(),
-                    name: displayName,
-                    firstName,
-                    lastName,
-                    positions,
-                    isManager: !!draft.isManager,
-                };
-            };
-
-            const upsertCoworkerRecord = useCallback(
-                async (draft) => {
-                    if (!config.spreadsheetId || !isAuthenticated) {
-                        throw new Error('Connect Google Sheets to manage coworkers.');
-                    }
-                    if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
-                        throw new Error('Google Sheets client is not ready yet.');
-                    }
-                    await ensureCoworkerSheetExists();
-
-                    const payload = formatCoworkerForSheet(draft);
-                    if (!payload) {
-                        throw new Error('Invalid coworker details.');
-                    }
-                    if (!payload.name) {
-                        throw new Error('Name is required.');
-                    }
-                    const positionsValue = payload.positions.join(', ');
-                    const rowValues = [
-                        payload.id,
-                        payload.name,
-                        payload.firstName,
-                        payload.lastName,
-                        positionsValue,
-                        payload.isManager ? 'TRUE' : '',
-                    ];
-
-                    try {
-                        if (payload.rowIndex) {
-                            await gapi.client.sheets.spreadsheets.values.update({
-                                spreadsheetId: config.spreadsheetId,
-                                range: coworkerRowRange(payload.rowIndex),
-                                valueInputOption: 'RAW',
-                                resource: {
-                                    values: [rowValues],
-                                },
-                            });
-                        } else {
-                            await gapi.client.sheets.spreadsheets.values.append({
-                                spreadsheetId: config.spreadsheetId,
-                                range: `${COWORKER_SHEET_NAME}!A:F`,
-                                valueInputOption: 'RAW',
-                                insertDataOption: 'INSERT_ROWS',
-                                resource: {
-                                    values: [rowValues],
-                                },
-                            });
-                        }
-                    } catch (error) {
-                        throw new Error(getSheetsErrorMessage(error, 'Unable to save coworker.'));
-                    }
-
-                    await loadCoworkerDirectory();
-                    return payload;
-                },
-                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
-            );
-
-            const deleteCoworkerRecord = useCallback(
-                async (record) => {
-                    if (!config.spreadsheetId || !isAuthenticated) {
-                        throw new Error('Connect Google Sheets to manage coworkers.');
-                    }
-                    if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
-                        throw new Error('Google Sheets client is not ready yet.');
-                    }
-                    if (!record?.rowIndex) {
-                        throw new Error('Missing row information for coworker.');
-                    }
-
-                    await ensureCoworkerSheetExists();
-
-                    try {
-                        await gapi.client.sheets.spreadsheets.values.update({
-                            spreadsheetId: config.spreadsheetId,
-                            range: coworkerRowRange(record.rowIndex),
-                            valueInputOption: 'RAW',
-                            resource: {
-                                values: [['', '', '', '', '', '']],
-                            },
-                        });
-                    } catch (error) {
-                        throw new Error(getSheetsErrorMessage(error, 'Unable to delete coworker.'));
-                    }
-
-                    await loadCoworkerDirectory();
-                },
-                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
-            );
-
-            const syncingRef = useRef(false);
-
-            const syncPendingShifts = useCallback(async () => {
-                if (syncingRef.current) return;
-                if (!config.spreadsheetId || !isAuthenticated || !isOnline()) return;
-                const queue = loadPendingQueue();
-                if (!queue.length) return;
-                syncingRef.current = true;
-
-                const sheetName = config.sheetName || 'Shifts';
-                const updates = [];
-                const clears = [];
-                const inserts = [];
-
-                queue.forEach((op) => {
-                    if (op.type === 'delete') {
-                        if (op.rowIndex) {
-                            clears.push(op);
-                        }
-                    } else if (op.type === 'upsert') {
-                        if (op.rowIndex) {
-                            updates.push(op);
-                        } else {
-                            inserts.push(op);
-                        }
-                    }
-                });
-
-                try {
-                    const dataRequests = [];
-                    updates.forEach((op) => {
-                        dataRequests.push({
-                            range: `${sheetName}!A${op.rowIndex}:F${op.rowIndex}`,
-                            values: [serializeShiftForRow(op.shift)],
-                        });
-                    });
-                    clears.forEach((op) => {
-                        dataRequests.push({
-                            range: `${sheetName}!A${op.rowIndex}:F${op.rowIndex}`,
-                            values: [['', '', '', '', '', '']],
-                        });
-                    });
-
-                    if (dataRequests.length) {
-                        await gapi.client.sheets.spreadsheets.values.batchUpdate({
-                            spreadsheetId: config.spreadsheetId,
-                            resource: {
-                                valueInputOption: 'USER_ENTERED',
-                                data: dataRequests,
-                            },
-                        });
-                    }
-
-                    if (inserts.length) {
-                        const insertValues = inserts.map((op) => serializeShiftForRow(op.shift));
-                        await gapi.client.sheets.spreadsheets.values.append({
-                            spreadsheetId: config.spreadsheetId,
-                            range: `${sheetName}!A:F`,
-                            valueInputOption: 'USER_ENTERED',
-                            insertDataOption: 'INSERT_ROWS',
-                            resource: {
-                                values: insertValues,
-                            },
-                        });
-                    }
-
-                    storePendingQueue([]);
-                    await loadShifts();
-                } catch (error) {
-                    console.warn('Failed to sync pending shifts', error);
-                    setError('Unable to sync pending changes. They will retry when you are back online.');
-                } finally {
-                    syncingRef.current = false;
-                }
-            }, [config.sheetName, config.spreadsheetId, isAuthenticated, loadShifts]);
-
-            useEffect(() => {
-                if (!isAuthenticated || !config.spreadsheetId) return;
-                loadShifts();
-            }, [isAuthenticated, config.spreadsheetId, loadShifts]);
-
-            useEffect(() => {
-                if (!isAuthenticated || !config.spreadsheetId) return;
-                loadCoworkerDirectory();
-            }, [isAuthenticated, config.spreadsheetId, loadCoworkerDirectory]);
-
-            useEffect(() => {
-                syncPendingShifts();
-            }, [syncPendingShifts]);
-
-            useEffect(() => {
-                const handleOnline = () => {
-                    syncPendingShifts();
-                    refreshToken('silent');
-                };
-                window.addEventListener('online', handleOnline);
-                return () => {
-                    window.removeEventListener('online', handleOnline);
-                };
-            }, [syncPendingShifts, refreshToken]);
-
-            const saveShift = async (shiftData) => {
-                const normalized = normalizeShiftPayload(shiftData) || shiftData;
-                const rowIndex = estimateRowIndex(shifts, normalized.id);
-                const queue = loadPendingQueue();
-                queue.push({
-                    type: 'upsert',
-                    id: normalized.id,
-                    shift: normalized,
-                    rowIndex,
-                    timestamp: Date.now(),
-                });
-                storePendingQueue(queue);
-
-                const nextRecords = applyLocalShift(shifts, {
-                    rowIndex: rowIndex || null,
-                    id: normalized.id,
-                    data: normalized,
-                });
-                setShifts(nextRecords);
-                storeCachedShifts(nextRecords);
-                setView(VIEW_MODES.DASHBOARD);
-
-                if (!config.spreadsheetId || !isAuthenticated) return;
-
-                setLoading(true);
-                setError(null);
-                try {
-                    await syncPendingShifts();
-                } finally {
-                    setLoading(false);
-                }
-            };
-
-            const deleteShift = async (shiftId) => {
-                if (!confirm('Are you sure you want to delete this shift?')) return;
-                
-                const rowIndex = estimateRowIndex(shifts, shiftId);
-                const queue = loadPendingQueue();
-                queue.push({
-                    type: 'delete',
-                    id: shiftId,
-                    rowIndex,
-                    timestamp: Date.now(),
-                });
-                storePendingQueue(queue);
-
-                const nextRecords = removeLocalShift(shifts, shiftId);
-                setShifts(nextRecords);
-                storeCachedShifts(nextRecords);
-
-                if (!config.spreadsheetId || !isAuthenticated) return;
-
-                setLoading(true);
-                setError(null);
-                try {
-                    await syncPendingShifts();
-                } finally {
-                    setLoading(false);
-                }
-            };
-
-            const startNewShift = useCallback(
-                (seed = {}) => {
-                    const normalizedSeed = normalizeShiftPayload(seed) || seed;
-                    const draft = deepMergeShift(DEFAULT_SHIFT_TEMPLATE, normalizedSeed);
-                    setCurrentShift(draft);
-                    setView(VIEW_MODES.SHIFT_CREATE);
-                },
-                []
-            );
-
-            const startNewShiftForDate = useCallback(
-                (dateKey) => {
-                    if (!dateKey) {
-                        startNewShift();
-                        return;
-                    }
-                    startNewShift({ date: dateKey });
-                },
-                [startNewShift]
-            );
-
-            const editShift = (shift) => {
-                setCurrentShift(shift.data);
-                setView(VIEW_MODES.SHIFT_EDIT, { shiftId: shift?.id });
-            };
-
-            const viewShift = (shift) => {
-                setCurrentShift(shift.data);
-                setView(VIEW_MODES.SHIFT_VIEW, { shiftId: shift?.id });
-            };
 
             const navItems = [
                 { key: VIEW_MODES.DASHBOARD, label: 'Dashboard', icon: 'fa-chart-line' },
@@ -922,7 +559,7 @@ function serializeShiftForRow(shift) {
                 useEffect(() => {
                     if (mode === VIEW_MODES.SHIFT_CREATE) {
                         if (!currentShift) {
-                            startNewShift({ date: new Date().toISOString().split('T')[0] });
+                            createShiftDraft({ date: new Date().toISOString().split('T')[0] });
                         }
                         return;
                     }
@@ -932,13 +569,13 @@ function serializeShiftForRow(shift) {
                         return;
                     }
 
-                    const match = shifts.find((item) => item.id === shiftId);
+                    const match = getShiftById(shiftId);
                     if (match) {
                         setCurrentShift(match.data);
                     } else if (!loading) {
                         loadShifts();
                     }
-                }, [mode, shiftId, shifts, loading, startNewShift, loadShifts, setView]);
+                }, [mode, shiftId, currentShift, createShiftDraft, getShiftById, loading, loadShifts, setCurrentShift, setView]);
 
                 if (mode !== VIEW_MODES.SHIFT_CREATE) {
                     if (!shiftId || !currentShift || currentShift.id !== shiftId) {
@@ -946,14 +583,14 @@ function serializeShiftForRow(shift) {
                     }
                 }
 
-                const effectiveShift =
-                    currentShift ||
-                    deepMergeShift(DEFAULT_SHIFT_TEMPLATE, mode === VIEW_MODES.SHIFT_CREATE ? {} : {});
+                if (!currentShift) {
+                    return null;
+                }
 
                 return (
                     <ShiftEntryPage
                         mode={mode === VIEW_MODES.SHIFT_VIEW ? 'view' : mode === VIEW_MODES.SHIFT_EDIT ? 'edit' : 'create'}
-                        shift={effectiveShift}
+                        shift={currentShift}
                         onSave={saveShift}
                         onCancel={() => setView(VIEW_MODES.DASHBOARD)}
                         onEdit={() => setView(VIEW_MODES.SHIFT_EDIT, { shiftId })}
