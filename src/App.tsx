@@ -18,6 +18,7 @@ import {
 import {
   DEFAULT_SHIFT_TEMPLATE,
   serializeShiftForRow,
+  deserializeShiftRow,
   applyLocalShift,
   removeLocalShift,
   estimateRowIndex,
