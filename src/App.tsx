@@ -752,6 +752,7 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                     const draft = deepMergeShift(DEFAULT_SHIFT_TEMPLATE, normalizedSeed);
                     setCurrentShift(draft);
                     setView(VIEW_MODES.SHIFT_CREATE);
+                    setShowConfig(false);
                 },
                 []
             );
@@ -770,11 +771,13 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
             const editShift = (shift) => {
                 setCurrentShift(shift.data);
                 setView(VIEW_MODES.SHIFT_EDIT);
+                setShowConfig(false);
             };
 
             const viewShift = (shift) => {
                 setCurrentShift(shift.data);
                 setView(VIEW_MODES.SHIFT_VIEW);
+                setShowConfig(false);
             };
 
             const navItems = [
@@ -791,6 +794,7 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
             })();
 
             const handleNavSelect = (key) => {
+                setShowConfig(false);
                 if (key === 'shift-new') {
                     startNewShift({ date: new Date().toISOString().split('T')[0] });
                     return;
