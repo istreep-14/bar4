@@ -34,17 +34,11 @@ import {
   normalizeCrewData,
   normalizeShiftPayload,
   upsertSelfCrew,
+  parseShiftDate,
+  formatShiftDate,
 } from './lib/shiftUtils';
-
-const VIEW_MODES = Object.freeze({
-  DASHBOARD: 'dashboard',
-  SHIFT_CREATE: 'shift-create',
-  SHIFT_EDIT: 'shift-edit',
-  SHIFT_VIEW: 'shift-view',
-  COWORKERS: 'coworkers',
-});
-
-const CREW_POSITION_OPTIONS = ['Bartender', 'Server', 'Expo', 'Busser', 'Hostess', 'Door'];
+import { VIEW_MODES, CREW_POSITION_OPTIONS } from './lib/constants';
+import CoworkerDatabase from './components/Coworkers/CoworkerDatabase';
 const COWORKER_SHEET_NAME = 'Coworkers';
 
 const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.') => {
@@ -1215,409 +1209,6 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
             );
         }
 
-        function CoworkerDatabase({ records = [], onCreate, onUpdate, onDelete, onRefresh, positions = [] }) {
-            const [filter, setFilter] = useState('');
-            const [editingKey, setEditingKey] = useState(null);
-            const [draft, setDraft] = useState({
-                rowIndex: null,
-                id: '',
-                name: '',
-                firstName: '',
-                lastName: '',
-                positions: [],
-                isManager: false,
-            });
-            const [saving, setSaving] = useState(false);
-            const [message, setMessage] = useState(null);
-
-            const resetDraft = () => {
-                setEditingKey(null);
-                setDraft({
-                    rowIndex: null,
-                    id: '',
-                    name: '',
-                    firstName: '',
-                    lastName: '',
-                    positions: [],
-                    isManager: false,
-                });
-            };
-
-            const sortedRecords = useMemo(() => {
-                const list = Array.isArray(records) ? [...records] : [];
-                list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-                return list;
-            }, [records]);
-
-            const filteredRecords = useMemo(() => {
-                if (!filter) return sortedRecords;
-                const search = filter.trim().toLowerCase();
-                if (!search) return sortedRecords;
-                return sortedRecords.filter((record) => {
-                    const tokens = [
-                        record.id,
-                        record.name,
-                        record.firstName,
-                        record.lastName,
-                        ...(record.positions || []),
-                    ]
-                        .filter(Boolean)
-                        .map((value) => String(value).toLowerCase());
-                    return tokens.some((token) => token.includes(search));
-                });
-            }, [sortedRecords, filter]);
-
-            const positionsList = positions.length ? positions : CREW_POSITION_OPTIONS;
-
-            const handleStartCreate = () => {
-                setMessage(null);
-                setEditingKey('new');
-                setDraft({
-                    rowIndex: null,
-                    id: '',
-                    name: '',
-                    firstName: '',
-                    lastName: '',
-                    positions: [],
-                    isManager: false,
-                });
-            };
-
-            const handleStartEdit = (record) => {
-                setMessage(null);
-                setEditingKey(record.id || `row-${record.rowIndex}`);
-                setDraft({
-                    rowIndex: record.rowIndex || null,
-                    id: record.id || '',
-                    name: record.name || '',
-                    firstName: record.firstName || '',
-                    lastName: record.lastName || '',
-                    positions: Array.isArray(record.positions) ? [...record.positions] : [],
-                    isManager: !!record.isManager,
-                });
-            };
-
-            const handleDraftChange = (field, value) => {
-                setDraft((prev) => ({
-                    ...prev,
-                    [field]: value,
-                }));
-            };
-
-            const togglePosition = (position) => {
-                setDraft((prev) => {
-                    const current = Array.isArray(prev.positions) ? prev.positions : [];
-                    const exists = current.includes(position);
-                    return {
-                        ...prev,
-                        positions: exists ? current.filter((item) => item !== position) : [...current, position],
-                    };
-                });
-            };
-
-            const handleCancel = () => {
-                resetDraft();
-            };
-
-            const handleSubmit = async () => {
-                if (!editingKey) return;
-                setSaving(true);
-                setMessage(null);
-                try {
-                    const payload = { ...draft, positions: Array.from(new Set(draft.positions || [])) };
-                    if (editingKey === 'new') {
-                        await onCreate?.(payload);
-                        setMessage({ type: 'success', text: 'Coworker added.' });
-                    } else {
-                        await onUpdate?.(payload);
-                        setMessage({ type: 'success', text: 'Coworker updated.' });
-                    }
-                    resetDraft();
-                } catch (error) {
-                    setMessage({ type: 'error', text: error?.message || 'Unable to save coworker.' });
-                } finally {
-                    setSaving(false);
-                }
-            };
-
-            const handleDelete = async (record) => {
-                if (!onDelete) return;
-                if (!confirm(`Remove ${record.name || 'this coworker'} from the directory?`)) return;
-                setSaving(true);
-                setMessage(null);
-                try {
-                    await onDelete(record);
-                    setMessage({ type: 'success', text: 'Coworker removed.' });
-                    if (editingKey && (editingKey === record.id || editingKey === `row-${record.rowIndex}`)) {
-                        resetDraft();
-                    }
-                } catch (error) {
-                    setMessage({ type: 'error', text: error?.message || 'Unable to delete coworker.' });
-                } finally {
-                    setSaving(false);
-                }
-            };
-
-            const renderPositionsBadges = (record) => {
-                const list = Array.isArray(record.positions) ? record.positions : [];
-                if (!list.length) {
-                    return <span className="text-xs text-slate-500">—</span>;
-                }
-                return (
-                    <div className="flex flex-wrap gap-2">
-                        {list.map((pos) => (
-                            <span
-                                key={pos}
-                                className="badge-pill bg-slate-800 text-slate-200 border border-slate-700"
-                            >
-                                {pos}
-                            </span>
-                        ))}
-                    </div>
-                );
-            };
-
-            const renderEditRow = (isNew) => (
-                <tr className="glass border border-slate-800/60">
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.id}
-                            onChange={(e) => handleDraftChange('id', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="ID (optional)"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.name}
-                            onChange={(e) => handleDraftChange('name', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="Display name"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.firstName}
-                            onChange={(e) => handleDraftChange('firstName', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="First"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.lastName}
-                            onChange={(e) => handleDraftChange('lastName', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="Last"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <div className="flex flex-wrap gap-2">
-                            {positionsList.map((pos) => {
-                                const active = draft.positions.includes(pos);
-                                return (
-                                    <button
-                                        type="button"
-                                        key={pos}
-                                        onClick={() => togglePosition(pos)}
-                                        disabled={saving}
-                                        className={`text-xs px-3 py-1.5 rounded-full border transition ${
-                                            active
-                                                ? 'bg-cyan-500/30 border-cyan-400/60 text-cyan-100'
-                                                : 'bg-slate-900/70 border-slate-700 text-slate-300 hover:border-cyan-400/60 hover:text-cyan-100'
-                                        }`}
-                                    >
-                                        {pos}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </td>
-                    <td className="px-3 py-3 align-top text-center">
-                        <label className="inline-flex items-center gap-2 text-xs text-slate-300">
-                            <input
-                                type="checkbox"
-                                checked={draft.isManager}
-                                onChange={(e) => handleDraftChange('isManager', e.target.checked)}
-                                className="accent-cyan-500"
-                                disabled={saving}
-                            />
-                            Manager
-                        </label>
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <div className="flex flex-wrap gap-2 justify-end">
-                            <button
-                                type="button"
-                                onClick={handleSubmit}
-                                disabled={saving}
-                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-xs font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
-                            >
-                                {saving ? 'Saving...' : isNew ? 'Add' : 'Save'}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleCancel}
-                                disabled={saving}
-                                className="px-4 py-2 rounded-xl border border-slate-700 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-60"
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </td>
-                </tr>
-            );
-
-            return (
-                <div className="glass rounded-2xl shadow-xl p-6 border border-slate-800/40 animate-slide-in">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                        <div>
-                            <div className="flex items-center gap-2">
-                                <h2 className="text-2xl font-bold text-slate-100">Crew Database</h2>
-                                <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
-                                    {records.length} teammates
-                                </span>
-                            </div>
-                            <p className="text-sm text-slate-400 mt-1">
-                                Manage the roster synced to the <code>Coworkers</code> sheet. This tab will be created automatically if it is missing.
-                            </p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                            <button
-                                type="button"
-                                onClick={onRefresh}
-                                className="px-4 py-2 rounded-xl border border-slate-700 text-slate-200 hover:border-cyan-500/60 transition text-sm"
-                                disabled={saving}
-                            >
-                                <i className="fas fa-rotate mr-2"></i>
-                                Refresh
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleStartCreate}
-                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
-                                disabled={saving}
-                            >
-                                <i className="fas fa-user-plus mr-2"></i>
-                                Add Coworker
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="mt-6">
-                        <input
-                            type="search"
-                            value={filter}
-                            onChange={(e) => setFilter(e.target.value)}
-                            className="w-full px-4 py-2.5 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="Search by name, position, or ID..."
-                            disabled={saving && !editingKey}
-                        />
-                    </div>
-
-                    {message && (
-                        <div
-                            className={`mt-4 rounded-xl px-4 py-3 text-sm border ${
-                                message.type === 'success'
-                                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                                    : 'border-rose-500/40 bg-rose-500/10 text-rose-200'
-                            }`}
-                        >
-                            {message.text}
-                        </div>
-                    )}
-
-                    <div className="mt-6 overflow-x-auto">
-                        <table className="min-w-full text-sm">
-                            <thead>
-                                <tr className="text-left text-slate-400 uppercase text-xs tracking-widest">
-                                    <th className="px-3 py-2 font-medium">ID</th>
-                                    <th className="px-3 py-2 font-medium">Display Name</th>
-                                    <th className="px-3 py-2 font-medium">First</th>
-                                    <th className="px-3 py-2 font-medium">Last</th>
-                                    <th className="px-3 py-2 font-medium">Positions</th>
-                                    <th className="px-3 py-2 font-medium text-center">Manager</th>
-                                    <th className="px-3 py-2 font-medium text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-800/40">
-                                {editingKey === 'new' && renderEditRow(true)}
-                                {filteredRecords.map((record) => {
-                                    const key = record.id || `row-${record.rowIndex}`;
-                                    const isEditing = editingKey === key;
-                                    if (isEditing) {
-                                        return (
-                                            <React.Fragment key={key}>
-                                                {renderEditRow(false)}
-                                            </React.Fragment>
-                                        );
-                                    }
-                                    return (
-                                        <tr key={key} className="hover:bg-slate-900/40 transition">
-                                            <td className="px-3 py-3 text-slate-300">{record.id || <span className="text-xs text-slate-500">—</span>}</td>
-                                            <td className="px-3 py-3 text-slate-100 font-medium flex items-center gap-2">
-                                                {record.name || <span className="text-xs text-slate-500">Unnamed</span>}
-                                                {record.isSelf && (
-                                                    <span className="badge-pill bg-cyan-500/30 text-cyan-100 border border-cyan-400/40">You</span>
-                                                )}
-                                            </td>
-                                            <td className="px-3 py-3 text-slate-300">{record.firstName || <span className="text-xs text-slate-500">—</span>}</td>
-                                            <td className="px-3 py-3 text-slate-300">{record.lastName || <span className="text-xs text-slate-500">—</span>}</td>
-                                            <td className="px-3 py-3">{renderPositionsBadges(record)}</td>
-                                            <td className="px-3 py-3 text-center">
-                                                {record.isManager ? (
-                                                    <span className="badge-pill bg-amber-500/20 text-amber-100 border border-amber-400/40">Manager</span>
-                                                ) : (
-                                                    <span className="text-xs text-slate-500">—</span>
-                                                )}
-                                            </td>
-                                            <td className="px-3 py-3">
-                                                <div className="flex items-center justify-end gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleStartEdit(record)}
-                                                        className="px-3 py-2 rounded-xl border border-slate-700 text-xs text-slate-200 hover:border-cyan-500/50 hover:text-cyan-100 transition"
-                                                        disabled={saving}
-                                                    >
-                                                        <i className="fas fa-pen mr-2"></i>
-                                                        Edit
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleDelete(record)}
-                                                        className="px-3 py-2 rounded-xl border border-rose-500/40 text-xs text-rose-200 hover:bg-rose-500/20 transition"
-                                                        disabled={saving}
-                                                    >
-                                                        <i className="fas fa-trash mr-2"></i>
-                                                        Delete
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                                {!filteredRecords.length && editingKey !== 'new' && (
-                                    <tr>
-                                        <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
-                                            No coworkers match your search.
-                                        </td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            );
-        }
-
         function MonthlyCalendar({ shifts, onSelectDay }) {
             const [activeMonth, setActiveMonth] = useState(() => {
                 const now = new Date();
@@ -1796,7 +1387,13 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
             const [valueMode, setValueMode] = useState('tips'); // tips | earnings
 
             const sortedShifts = useMemo(() => {
-                return [...shifts].sort((a, b) => new Date(b.data.date) - new Date(a.data.date)).slice(0, 20);
+                return [...shifts]
+                    .sort((a, b) => {
+                        const aTime = parseShiftDate(a.data.date)?.getTime() ?? 0;
+                        const bTime = parseShiftDate(b.data.date)?.getTime() ?? 0;
+                        return bTime - aTime;
+                    })
+                    .slice(0, 20);
             }, [shifts]);
 
             const handleCalendarSelect = useCallback(
@@ -1812,18 +1409,18 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
 
             const formatDisplayDate = (dateString) => {
                 if (!dateString) return { label: '—', sublabel: '' };
-                const date = new Date(dateString);
-                if (Number.isNaN(date.getTime())) {
+                const parsed = parseShiftDate(dateString);
+                if (!parsed) {
                     return { label: dateString, sublabel: '' };
                 }
-                const label = date.toLocaleDateString('en-US', {
+                const label = parsed.toLocaleDateString('en-US', {
                     month: 'short',
                     day: 'numeric',
                 });
-                const sublabel = date.toLocaleDateString('en-US', {
+                const sublabel = parsed.toLocaleDateString('en-US', {
                     weekday: 'long',
                 });
-                const full = date.toLocaleDateString('en-US', {
+                const full = parsed.toLocaleDateString('en-US', {
                     weekday: 'long',
                     month: 'long',
                     day: 'numeric',
@@ -2063,14 +1660,20 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
             const spanOptions = [7, 14, 30, 60];
 
             const recentShifts = useMemo(() => {
-                const sorted = [...shifts].sort((a, b) => new Date(a.data.date) - new Date(b.data.date));
+            const sorted = [...shifts].sort((a, b) => {
+                const aTime = parseShiftDate(a.data.date)?.getTime() ?? 0;
+                const bTime = parseShiftDate(b.data.date)?.getTime() ?? 0;
+                return aTime - bTime;
+            });
                 return sorted.slice(-chartSpan);
             }, [shifts, chartSpan]);
 
             useEffect(() => {
                 if (!lineRef.current) return;
 
-                const labels = recentShifts.map((shift) => new Date(shift.data.date).toLocaleDateString());
+                const labels = recentShifts.map((shift) =>
+                    formatShiftDate(shift.data.date) || shift.data.date || ''
+                );
                 const hourlySeries = recentShifts.map((shift) => shift.data.summary?.hourly || 0);
                 const tipsPerHourSeries = recentShifts.map((shift) => shift.data.summary?.tips?.actual?.perHour || 0);
 
@@ -2145,7 +1748,9 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                 }
 
                 const earningsBars = shifts.slice(-8).map((shift) => shift.data.earnings || {});
-                const barLabels = shifts.slice(-8).map((shift) => new Date(shift.data.date).toLocaleDateString());
+                const barLabels = shifts
+                    .slice(-8)
+                    .map((shift) => formatShiftDate(shift.data.date) || shift.data.date || '');
 
                 barChartRef.current = new Chart(ctx, {
                     type: 'bar',
@@ -2299,7 +1904,11 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                     >
                         <div>
                             <p className="text-xs uppercase tracking-wide text-slate-400">
-                                {new Date(data.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                                {formatShiftDate(data.date, {
+                                    weekday: 'short',
+                                    month: 'short',
+                                    day: 'numeric',
+                                }) || data.date || '—'}
                             </p>
                             <p className="text-base font-semibold text-slate-100 truncate">{data.myName || 'Unnamed Shift'}</p>
                         </div>
@@ -3412,15 +3021,7 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
             const shiftTypeMeta = SHIFT_TYPE_META[formData.type] || SHIFT_TYPE_META.default;
             const headerIcon = shiftTypeMeta.icon || (shiftTypeMode === 'auto' ? 'fa-circle-half-stroke' : 'fa-circle-question');
             const headerGradient = 'from-slate-950 via-slate-900 to-slate-950';
-            const shiftDateObject = useMemo(() => {
-                if (!formData.date) return null;
-                const parts = formData.date.split('-').map(Number);
-                if (parts.length !== 3) return null;
-                const [year, month, day] = parts;
-                if (!year || !month || !day) return null;
-                const parsed = new Date(year, month - 1, day);
-                return Number.isNaN(parsed.getTime()) ? null : parsed;
-            }, [formData.date]);
+            const shiftDateObject = useMemo(() => parseShiftDate(formData.date), [formData.date]);
             const formattedShiftDate = shiftDateObject
                 ? shiftDateObject.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
                 : 'Set Date';
@@ -5308,7 +4909,7 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                 <div className="glass rounded-2xl shadow-xl p-6 animate-slide-in border border-slate-800/40">
                     <div className="flex items-center justify-between mb-6">
                         <h2 className="text-2xl font-bold text-slate-100">
-                            Shift Details - {new Date(shift.date).toLocaleDateString()}
+                            Shift Details - {formatShiftDate(shift.date) || shift.date || '—'}
                         </h2>
                         <div className="flex gap-2">
                             <button
@@ -5330,10 +4931,17 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                         <div className="bg-slate-900/70 rounded-xl p-4 border border-slate-800/60">
                             <h3 className="font-semibold text-slate-100 mb-3">Basic Information</h3>
                             <div className="space-y-2 text-slate-300 text-sm">
-                                <div className="flex justify-between">
-                                    <span>Date:</span>
-                                    <span className="font-semibold text-slate-100">{shift.date}</span>
-                                </div>
+                                  <div className="flex justify-between">
+                                      <span>Date:</span>
+                                      <span className="font-semibold text-slate-100">
+                                          {formatShiftDate(shift.date, {
+                                              weekday: 'long',
+                                              month: 'long',
+                                              day: 'numeric',
+                                              year: 'numeric',
+                                          }) || shift.date || '—'}
+                                      </span>
+                                  </div>
                                 <div className="flex justify-between">
                                     <span>Type:</span>
                                     <span className="font-semibold text-slate-100 capitalize">{shift.type}</span>

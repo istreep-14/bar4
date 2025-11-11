@@ -838,3 +838,21 @@ export function upsertSelfCrew(data, directory) {
   if (!target.actualEnd && baseEnd) target.actualEnd = baseEnd;
   return next;
 }
+
+export function parseShiftDate(dateString) {
+  if (!dateString || typeof dateString !== 'string') return null;
+  const parts = dateString.trim().split('-');
+  if (parts.length < 3) return null;
+  const [yearStr, monthStr, dayStr] = parts;
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  if ([year, month, day].some((value) => !Number.isFinite(value))) return null;
+  return new Date(year, month - 1, day);
+}
+
+export function formatShiftDate(dateString, options, locale = 'en-US') {
+  const parsed = parseShiftDate(dateString);
+  if (!parsed) return '';
+  return parsed.toLocaleDateString(locale, options);
+}
