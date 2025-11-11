@@ -2,17 +2,29 @@
 import React from 'react';
 import { useShiftFormContext } from '../ShiftFormContext';
 
-const TimingsPage = () => {
-  const { formData, getTimeDraftValue, handleTimeDraftChange, commitTimeValue, timeErrors, updateFormPath } =
-    useShiftFormContext();
+const TIMING_BUCKETS = ['present', 'clock', 'tips', 'working'];
+
+const TimingsPage: React.FC = () => {
+  const {
+    formData,
+    getTimeDraftValue,
+    handleTimeDraftChange,
+    commitTimeValue,
+    timeErrors,
+    updateFormPath,
+    goToOverview,
+  } = useShiftFormContext();
 
   return (
     <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-      <h3 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
-        <i className="fas fa-clock text-slate-400"></i>
-        Timing Buckets
-      </h3>
-      {['present', 'clock', 'tips', 'working'].map((bucket) => (
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+          <i className="fas fa-clock text-slate-400"></i>
+          Timing Buckets
+        </h3>
+      </div>
+
+      {TIMING_BUCKETS.map((bucket) => (
         <div key={bucket} className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
           <div className="md:col-span-1">
             <p className="text-xs uppercase tracking-wider text-slate-500">{bucket.toUpperCase()}</p>
@@ -66,6 +78,23 @@ const TimingsPage = () => {
           </div>
         </div>
       ))}
+
+      <div className="flex justify-end gap-2 pt-2">
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm text-slate-300 border border-slate-700 rounded-xl hover:border-slate-500"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 rounded-xl hover:bg-cyan-500/30"
+        >
+          Save Timings
+        </button>
+      </div>
     </div>
   );
 };

@@ -2,7 +2,7 @@
 import React from 'react';
 import { useShiftFormContext } from '../ShiftFormContext';
 
-const OverviewPage = () => {
+const OverviewPage: React.FC = () => {
   const {
     formData,
     activePage,
@@ -24,9 +24,9 @@ const OverviewPage = () => {
   } = useShiftFormContext();
 
   return (
-    <>
+    <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="md:col-span-1">
+        <div>
           <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
             Start Time
             <button type="button" onClick={() => setActivePage('timings')} className="text-slate-500 hover:text-cyan-300">
@@ -48,7 +48,7 @@ const OverviewPage = () => {
             {timeErrors['time.base.start'] && <p className="text-xs text-amber-400">{timeErrors['time.base.start']}</p>}
           </div>
         </div>
-        <div className="md:col-span-1">
+        <div>
           <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
             End Time
             <button type="button" onClick={() => setActivePage('timings')} className="text-slate-500 hover:text-cyan-300">
@@ -75,7 +75,7 @@ const OverviewPage = () => {
             {timeErrors['time.base.end'] && <p className="text-xs text-amber-400">{timeErrors['time.base.end']}</p>}
           </div>
         </div>
-        <div className="md:col-span-1">
+        <div>
           <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
             <span>Tips</span>
             <button
@@ -112,7 +112,7 @@ const OverviewPage = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mt-6">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <div className="glass rounded-2xl p-4 border border-slate-800/60">
           <p className="text-xs uppercase tracking-widest text-slate-500">Total Earnings</p>
           <p className="mt-2 text-3xl font-semibold text-cyan-300">${displayedEarnings.toFixed(2)}</p>
@@ -157,32 +157,29 @@ const OverviewPage = () => {
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-3 mt-6">
-        {quickPanels.map((panel) => {
-          const isActive = activePage === panel.page;
-          return (
-            <button
-              key={panel.key}
-              type="button"
-              onClick={() => setActivePage(panel.page)}
-              className={`icon-button glass px-4 py-3 rounded-2xl flex items-center gap-3 border border-slate-800/60 ${
-                isActive ? 'ring-2 ring-cyan-500/40' : ''
-              }`}
-            >
-              <div className="relative">
-                <span className="w-8 h-8 rounded-xl bg-slate-900/70 flex items-center justify-center text-cyan-300">
-                  <i className={`fas ${panel.icon}`}></i>
-                </span>
-                <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full shadow ${statusBadgeClass(panel.status)}`}></span>
-              </div>
-              <div className="text-left">
-                <p className="text-xs uppercase tracking-wider text-slate-400">{panel.label}</p>
-                <p className="text-sm font-semibold text-slate-200">{panel.metric || '—'}</p>
-              </div>
-              <i className={`fas ${isActive ? 'fa-circle-dot text-cyan-200' : 'fa-arrow-right text-slate-600'}`}></i>
-            </button>
-          );
-        })}
+      <div className="flex flex-wrap gap-3">
+        {quickPanels.map((panel) => (
+          <button
+            key={panel.key}
+            type="button"
+            onClick={() => setActivePage(panel.page)}
+            className={`icon-button glass px-4 py-3 rounded-2xl flex items-center gap-3 border border-slate-800/60 ${
+              activePage === panel.page ? 'ring-2 ring-cyan-500/40' : ''
+            }`}
+          >
+            <div className="relative">
+              <span className="w-8 h-8 rounded-xl bg-slate-900/70 flex items-center justify-center text-cyan-300">
+                <i className={`fas ${panel.icon}`}></i>
+              </span>
+              <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full shadow ${statusBadgeClass(panel.status)}`}></span>
+            </div>
+            <div className="text-left">
+              <p className="text-xs uppercase tracking-wider text-slate-400">{panel.label}</p>
+              <p className="text-sm font-semibold text-slate-200">{panel.metric || '—'}</p>
+            </div>
+            <i className={`fas ${activePage === panel.page ? 'fa-circle-dot text-cyan-200' : 'fa-arrow-right text-slate-600'}`}></i>
+          </button>
+        ))}
         <button
           type="button"
           onClick={() => {
@@ -195,17 +192,7 @@ const OverviewPage = () => {
           Quick Add Party
         </button>
       </div>
-
-      <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-3 mt-6">
-        <label className="text-xs uppercase tracking-widest text-slate-500">Shift Notes</label>
-        <textarea
-          value={formData.meta?.notes || ''}
-          onChange={(e) => updateFormPath('meta.notes', e.target.value)}
-          className="w-full min-h-[120px] px-4 py-3 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm"
-          placeholder="Context, observations, weather, promotions..."
-        ></textarea>
-      </div>
-    </>
+    </div>
   );
 };
 

@@ -2,17 +2,19 @@
 import React from 'react';
 import { useShiftFormContext } from '../ShiftFormContext';
 
-const EnhancementsPage = () => {
+const EnhancementsPage: React.FC = () => {
   const {
     formData,
+    updateFormPath,
     getTimeDraftValue,
     handleTimeDraftChange,
     commitTimeValue,
     timeErrors,
-    updateFormPath,
-    handleAddSwindleMovement,
+    wageClockHours,
+    wageTotal,
     handleAddConsideration,
-    handleAddDrinkingItem,
+    handleAddSwindleMovement,
+    goToOverview,
   } = useShiftFormContext();
 
   return (
@@ -88,81 +90,70 @@ const EnhancementsPage = () => {
                 </div>
               </div>
             </div>
-            <div>
-              <label className="text-xs uppercase text-slate-500">Total</label>
-              <input
-                type="text"
-                value={formData.wage.total ?? ''}
-                onChange={(e) => updateFormPath('wage.total', e.target.value)}
-                className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                placeholder="30.00"
-              />
-            </div>
+            {wageClockHours != null && <p className="text-xs text-slate-500">Clocked {wageClockHours.toFixed(2)} hours</p>}
+            <p className="text-xs text-slate-500">Total ${wageTotal.toFixed(2)}</p>
           </div>
         </div>
 
-        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-3">
+        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
           <p className="text-xs uppercase tracking-wider text-slate-500">Overtime</p>
           <input
             type="text"
             value={formData.earnings.overtime ?? ''}
             onChange={(e) => updateFormPath('earnings.overtime', e.target.value)}
-            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+            className="mt-3 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
             placeholder="0.00"
           />
-          <label className="flex items-center gap-2 text-xs text-slate-500">
-            <input
-              type="checkbox"
-              checked={formData.sectionOpen?.overtime || false}
-              onChange={(e) => updateFormPath('sectionOpen.overtime', e.target.checked)}
-              className="w-4 h-4 rounded border border-slate-600 bg-slate-900 text-cyan-500"
-            />
-            Track overtime block
-          </label>
         </div>
 
-        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-3">
-          <p className="text-xs uppercase tracking-wider text-slate-500">Chump</p>
-          <select
-            value={formData.chump?.outcome || ''}
-            onChange={(e) => updateFormPath('chump.outcome', e.target.value)}
-            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
-          >
-            <option value="">Not Played</option>
-            <option value="win">Won</option>
-            <option value="loss">Lost</option>
-            <option value="push">Push</option>
-          </select>
-          <input
-            type="text"
-            value={formData.chump?.winner || ''}
-            onChange={(e) => updateFormPath('chump.winner', e.target.value)}
-            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-            placeholder="Winner"
-          />
-          <textarea
-            value={formData.chump?.notes || ''}
-            onChange={(e) => updateFormPath('chump.notes', e.target.value)}
-            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
-            placeholder="Notes about the game..."
-          ></textarea>
+        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
+          <div className="flex items-center justify-between">
+            <p className="text-xs uppercase tracking-wider text-slate-500">Chump</p>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-slate-500">Played?</label>
+              <input
+                type="checkbox"
+                checked={formData.chump?.played || false}
+                onChange={(e) => updateFormPath('chump.played', e.target.checked)}
+                className="accent-cyan-500"
+              />
+            </div>
+          </div>
+          <div className="mt-3 space-y-2">
+            <input
+              type="number"
+              step="0.01"
+              value={formData.chump?.amount?.total || ''}
+              onChange={(e) => updateFormPath('chump.amount.total', e.target.value)}
+              className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+              placeholder="Pot total"
+            />
+            <input
+              type="text"
+              value={formData.chump?.winner || ''}
+              onChange={(e) => updateFormPath('chump.winner', e.target.value)}
+              className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+              placeholder="Winner"
+            />
+            <textarea
+              value={formData.chump?.notes || ''}
+              onChange={(e) => updateFormPath('chump.notes', e.target.value)}
+              className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
+              placeholder="Notes"
+            ></textarea>
+          </div>
         </div>
       </div>
-
-      <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-4">
+      <div className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
         <div className="flex items-center justify-between">
-          <p className="text-xs uppercase tracking-wider text-slate-500">Consideration</p>
-          <button
-            type="button"
-            onClick={handleAddConsideration}
-            className="text-xs text-cyan-200 hover:text-white flex items-center gap-2"
-          >
+          <h4 className="text-sm font-semibold text-slate-200">Consideration</h4>
+          <button type="button" onClick={handleAddConsideration} className="text-xs text-cyan-200 hover:text-white flex items-center gap-2">
             <i className="fas fa-plus"></i>
-            Add Consideration
+            Item
           </button>
         </div>
         {(formData.consideration?.items || []).map((item, idx) => (
-          <div key={idx} className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+          <div key={idx} className="grid grid-cols-1 md:grid-cols-3 gap-2">
             <input
               type="text"
               value={item.from || ''}
@@ -189,16 +180,12 @@ const EnhancementsPage = () => {
         ))}
       </div>
 
-      <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-4">
+      <div className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
         <div className="flex items-center justify-between">
-          <p className="text-xs uppercase tracking-wider text-slate-500">Swindle Adjustments</p>
-          <button
-            type="button"
-            onClick={handleAddSwindleMovement}
-            className="text-xs text-cyan-200 hover:text-white flex items-center gap-2"
-          >
+          <h4 className="text-sm font-semibold text-slate-200">Swindle Movements</h4>
+          <button type="button" onClick={handleAddSwindleMovement} className="text-xs text-cyan-200 hover:text-white flex items-center gap-2">
             <i className="fas fa-plus"></i>
-            Add Movement
+            Movement
           </button>
         </div>
         {(formData.swindle?.movements || []).map((move, idx) => (
@@ -236,21 +223,21 @@ const EnhancementsPage = () => {
         ))}
       </div>
 
-      <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <p className="text-xs uppercase tracking-wider text-slate-500">Drinking</p>
-          <button
-            type="button"
-            onClick={handleAddDrinkingItem}
-            className="text-xs text-cyan-200 hover:text-white flex items-center gap-2"
-          >
-            <i className="fas fa-plus"></i>
-            Add Drink
-          </button>
-        </div>
-        <p className="text-xs text-slate-400">
-          Log on-shift beverages to auto-calc SBE and compliance details. Use the dedicated “Drinks” page for deeper tracking.
-        </p>
+      <div className="flex justify-end gap-2 pt-2">
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm text-slate-300 border border-slate-700 rounded-xl hover:border-slate-500"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 rounded-xl hover:bg-cyan-500/30"
+        >
+          Save Enhancements
+        </button>
       </div>
     </div>
   );

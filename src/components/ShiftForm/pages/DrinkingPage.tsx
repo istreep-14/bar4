@@ -2,13 +2,14 @@
 import React from 'react';
 import { useShiftFormContext } from '../ShiftFormContext';
 
-const DrinkingPage = () => {
+const DrinkingPage: React.FC = () => {
   const {
     formData,
     handleAddDrinkingItem,
     duplicateDrinkingItem,
     handleDeleteDrinkingItem,
     updateFormPath,
+    goToOverview,
   } = useShiftFormContext();
 
   return (
@@ -23,6 +24,7 @@ const DrinkingPage = () => {
           Add Item
         </button>
       </div>
+
       {(formData.drinking?.items || []).map((item, idx) => (
         <div key={idx} className="grid grid-cols-1 md:grid-cols-6 gap-2">
           <input
@@ -89,6 +91,23 @@ const DrinkingPage = () => {
           </div>
         </div>
       ))}
+
+      <div className="flex justify-end gap-2 pt-2">
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm text-slate-300 border border-slate-700 rounded-xl hover:border-slate-500"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 rounded-xl hover:bg-cyan-500/30"
+        >
+          Save Drinks
+        </button>
+      </div>
     </div>
   );
 };

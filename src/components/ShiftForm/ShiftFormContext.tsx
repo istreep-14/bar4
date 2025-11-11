@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { createContext, useContext } from 'react';
 
-export const ShiftFormContext = createContext(null);
+const ShiftFormContext = createContext(null);
 
 export const useShiftFormContext = () => {
   const context = useContext(ShiftFormContext);

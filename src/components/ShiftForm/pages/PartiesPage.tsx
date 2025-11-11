@@ -2,9 +2,10 @@
 import React from 'react';
 import { useShiftFormContext } from '../ShiftFormContext';
 
-const PartiesPage = () => {
+const PartiesPage: React.FC = () => {
   const {
     formData,
+    partyCount,
     handleAddParty,
     handleDeleteParty,
     expandedParties,
@@ -16,10 +17,8 @@ const PartiesPage = () => {
     timeErrors,
     cancelPartySection,
     savePartySection,
+    goToOverview,
   } = useShiftFormContext();
-
-  const partyCount = Object.keys(formData.parties || {}).length;
-  const defaultCutType = formData.type === 'day' ? 'day' : 'night';
 
   return (
     <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
@@ -33,11 +32,15 @@ const PartiesPage = () => {
           Add Party
         </button>
       </div>
+
       {partyCount === 0 && <p className="text-sm text-slate-500">No parties logged yet.</p>}
+
       <div className="space-y-3">
         {Object.entries(formData.parties || {}).map(([id, party], index) => {
           const expanded = !!expandedParties[id];
           const partyLabel = party.name || `Party ${index + 1}`;
+          const defaultCutType = formData.type === 'day' ? 'day' : 'night';
+
           return (
             <div key={id} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
               <div className="flex flex-col md:flex-row md:items-center gap-3 justify-between">
@@ -54,11 +57,10 @@ const PartiesPage = () => {
                   <select
                     value={party.cutType || defaultCutType}
                     onChange={(e) => updateFormPath(`parties.${id}.cutType`, e.target.value)}
-                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
+                    className="px-3 py-1.5 bg-slate-900/60 border border-slate-700 rounded-xl text-xs"
                   >
-                    <option value="day">Day Cut</option>
-                    <option value="mid">Mid</option>
-                    <option value="night">Night Cut</option>
+                    <option value="day">Day</option>
+                    <option value="night">Night</option>
                   </select>
                   <button
                     type="button"
@@ -72,7 +74,7 @@ const PartiesPage = () => {
 
               {expanded && (
                 <div className="space-y-4 border-t border-slate-800/60 pt-4">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
                       <label className="text-xs uppercase text-slate-500">Party Name</label>
                       <input
@@ -80,17 +82,7 @@ const PartiesPage = () => {
                         value={party.name || ''}
                         onChange={(e) => updateFormPath(`parties.${id}.name`, e.target.value)}
                         className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                        placeholder="VIP / Event name"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs uppercase text-slate-500">Type</label>
-                      <input
-                        type="text"
-                        value={party.type || ''}
-                        onChange={(e) => updateFormPath(`parties.${id}.type`, e.target.value)}
-                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                        placeholder="Birthday, Corp, ..."
+                        placeholder="Party Name"
                       />
                     </div>
                     <div>
@@ -100,132 +92,68 @@ const PartiesPage = () => {
                         value={party.location || ''}
                         onChange={(e) => updateFormPath(`parties.${id}.location`, e.target.value)}
                         className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                        placeholder="Main, Deck..."
+                        placeholder="Bar, Room, Patio..."
                       />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                     <div>
-                      <label className="text-xs uppercase text-slate-500">Time Start</label>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={getTimeDraftValue(`parties.${id}.time.start`)}
-                        onChange={(e) => handleTimeDraftChange(`parties.${id}.time.start`, e.target.value)}
-                        onBlur={(e) => commitTimeValue(`parties.${id}.time.start`, e.target.value, { mode: 'start' })}
-                        onFocus={(e) => e.target.select()}
-                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                      />
-                      {timeErrors[`parties.${id}.time.start`] && (
-                        <p className="text-xs text-amber-400 mt-1">{timeErrors[`parties.${id}.time.start`]}</p>
-                      )}
+                      <label className="text-xs uppercase text-slate-500">Start</label>
+                      <div className="mt-1 space-y-1">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={getTimeDraftValue(`parties.${id}.time.start`)}
+                          onChange={(e) => handleTimeDraftChange(`parties.${id}.time.start`, e.target.value)}
+                          onBlur={(e) => commitTimeValue(`parties.${id}.time.start`, e.target.value, { mode: 'start' })}
+                          onFocus={(e) => e.target.select()}
+                          className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                          placeholder="e.g. 3"
+                        />
+                        {timeErrors[`parties.${id}.time.start`] && (
+                          <p className="text-xs text-amber-400">{timeErrors[`parties.${id}.time.start`]}</p>
+                        )}
+                      </div>
                     </div>
                     <div>
-                      <label className="text-xs uppercase text-slate-500">Time End</label>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={getTimeDraftValue(`parties.${id}.time.end`)}
-                        onChange={(e) => handleTimeDraftChange(`parties.${id}.time.end`, e.target.value)}
-                        onBlur={(e) =>
-                          commitTimeValue(`parties.${id}.time.end`, e.target.value, {
-                            mode: 'end',
-                            referenceStart: party.time?.start,
-                          })
-                        }
-                        onFocus={(e) => e.target.select()}
-                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                      />
-                      {timeErrors[`parties.${id}.time.end`] && (
-                        <p className="text-xs text-amber-400 mt-1">{timeErrors[`parties.${id}.time.end`]}</p>
-                      )}
+                      <label className="text-xs uppercase text-slate-500">End</label>
+                      <div className="mt-1 space-y-1">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={getTimeDraftValue(`parties.${id}.time.end`)}
+                          onChange={(e) => handleTimeDraftChange(`parties.${id}.time.end`, e.target.value)}
+                          onBlur={(e) =>
+                            commitTimeValue(`parties.${id}.time.end`, e.target.value, {
+                              mode: 'end',
+                              referenceStart: party.time?.start,
+                            })
+                          }
+                          onFocus={(e) => e.target.select()}
+                          className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
+                          placeholder="e.g. 630"
+                        />
+                        {timeErrors[`parties.${id}.time.end`] && (
+                          <p className="text-xs text-amber-400">{timeErrors[`parties.${id}.time.end`]}</p>
+                        )}
+                      </div>
                     </div>
                     <div>
-                      <label className="text-xs uppercase text-slate-500">Duration</label>
-                      <p className="mt-2 text-sm text-slate-200">
-                        {party.time?.duration ? `${Number(party.time.duration).toFixed(2)}h` : '--'}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div>
-                      <label className="text-xs uppercase text-slate-500">Package (Drink)</label>
+                      <label className="text-xs uppercase text-slate-500">Gratuity</label>
                       <input
                         type="text"
-                        value={party.packages?.drink || ''}
-                        onChange={(e) => updateFormPath(`parties.${id}.packages.drink`, e.target.value)}
+                        value={party.tips?.gratuity ?? ''}
+                        onChange={(e) => updateFormPath(`parties.${id}.tips.gratuity`, e.target.value)}
                         className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                        placeholder="Open bar, Shots, ..."
+                        placeholder="≈800"
                       />
                     </div>
                     <div>
-                      <label className="text-xs uppercase text-slate-500">Package (Food)</label>
+                      <label className="text-xs uppercase text-slate-500">Cash Tips</label>
                       <input
                         type="text"
-                        value={party.packages?.food || ''}
-                        onChange={(e) => updateFormPath(`parties.${id}.packages.food`, e.target.value)}
-                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                        placeholder="Apps, Dinner, ..."
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs uppercase text-slate-500">Headcount</label>
-                      <input
-                        type="number"
-                        min="0"
-                        value={party.size || ''}
-                        onChange={(e) => updateFormPath(`parties.${id}.size`, e.target.value)}
-                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                        placeholder="12"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-xs uppercase text-slate-500">Primary</label>
-                      <input
-                        type="text"
-                        value={party.workers?.primary || ''}
-                        onChange={(e) => updateFormPath(`parties.${id}.workers.primary`, e.target.value)}
-                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                        placeholder="Lead bartender"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs uppercase text-slate-500">Supplements</label>
-                      <input
-                        type="text"
-                        value={Array.isArray(party.workers?.supplement) ? party.workers.supplement.join(', ') : ''}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          const supplements = value ? value.split(',').map((item) => item.trim()).filter(Boolean) : [];
-                          updateFormPath(`parties.${id}.workers.supplement`, supplements);
-                        }}
-                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                        placeholder="Support crew"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-xs uppercase text-slate-500">Tips (Cash)</label>
-                      <input
-                        type="text"
-                        value={party.tips?.cash || ''}
-                        onChange={(e) => updateFormPath(`parties.${id}.tips.cash`, e.target.value)}
-                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                        placeholder="optional"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs uppercase text-slate-500">Tips (Non-Cash)</label>
-                      <input
-                        type="text"
-                        value={party.tips?.cashTips || ''}
+                        value={party.tips?.cashTips ?? ''}
                         onChange={(e) => updateFormPath(`parties.${id}.tips.cashTips`, e.target.value)}
                         className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
                         placeholder="optional"
@@ -261,6 +189,23 @@ const PartiesPage = () => {
             </div>
           );
         })}
+      </div>
+
+      <div className="flex justify-end gap-2 pt-2">
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm text-slate-300 border border-slate-700 rounded-xl hover:border-slate-500"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 rounded-xl hover:bg-cyan-500/30"
+        >
+          Save Parties
+        </button>
       </div>
     </div>
   );

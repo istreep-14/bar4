@@ -2,7 +2,7 @@
 import React from 'react';
 import { useShiftFormContext } from '../ShiftFormContext';
 
-const CutsPage = () => {
+const CutsPage: React.FC = () => {
   const {
     formData,
     handleAddCut,
@@ -10,8 +10,9 @@ const CutsPage = () => {
     toggleCutDetails,
     updateFormPath,
     deleteCut,
-    saveCutSection,
     cancelCutSection,
+    saveCutSection,
+    goToOverview,
   } = useShiftFormContext();
 
   return (
@@ -26,11 +27,13 @@ const CutsPage = () => {
           Custom Cut
         </button>
       </div>
+
       <div className="space-y-3">
         {Object.entries(formData.cuts || {}).map(([key, cut]) => {
           const expanded = !!expandedCuts[key];
           const baseCut = ['day', 'mid', 'night'].includes(key);
           const label = cut.label || key.charAt(0).toUpperCase() + key.slice(1);
+
           return (
             <div key={key} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
               <div className="flex flex-col md:flex-row md:items-center gap-3 justify-between">
@@ -62,6 +65,7 @@ const CutsPage = () => {
                   </button>
                 )}
               </div>
+
               {expanded && (
                 <div className="space-y-4 border-t border-slate-800/60 pt-4">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -98,6 +102,7 @@ const CutsPage = () => {
                       />
                     </div>
                   </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
                       <label className="text-xs uppercase text-slate-500">Pool Total</label>
@@ -120,6 +125,7 @@ const CutsPage = () => {
                       />
                     </div>
                   </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div>
                       <label className="text-xs uppercase text-slate-500">Share %</label>
@@ -152,6 +158,7 @@ const CutsPage = () => {
                       />
                     </div>
                   </div>
+
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
@@ -173,6 +180,23 @@ const CutsPage = () => {
             </div>
           );
         })}
+      </div>
+
+      <div className="flex justify-end gap-2 pt-2">
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm text-slate-300 border border-slate-700 rounded-xl hover:border-slate-500"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={goToOverview}
+          className="px-4 py-2 text-sm bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 rounded-xl hover:bg-cyan-500/30"
+        >
+          Save Cuts
+        </button>
       </div>
     </div>
   );
