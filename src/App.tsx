@@ -500,6 +500,31 @@ function serializeShiftForRow(shift) {
                 return () => clearTimeout(timer);
             }, [authSession, refreshToken]);
 
+            if (configLoading) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
+                        <div className="space-y-3 text-center">
+                            <div className="text-sm uppercase tracking-[0.4em] text-slate-500">Bar Tracker</div>
+                            <div className="text-lg font-semibold text-slate-200">Loading configuration…</div>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (configError) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
+                        <div className="space-y-4 text-center max-w-md px-6">
+                            <div className="text-sm uppercase tracking-[0.4em] text-rose-500">Configuration Error</div>
+                            <div className="text-lg font-semibold text-slate-200">{configError}</div>
+                            <p className="text-sm text-slate-400">
+                                Ensure `config.json` exists with valid Google credentials, then refresh the page.
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
+
 
             const navItems = [
                 { key: VIEW_MODES.DASHBOARD, label: 'Dashboard', icon: 'fa-chart-line' },
