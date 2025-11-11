@@ -1,0 +1,16 @@
+[
+  {
+    "id": "coworker-5001",
+    "name": "Morgan",
+    "role": "Bartender",
+    "lastShift": "2024-09-29",
+    "createdAt": "2024-09-30T17:12:00.000Z"
+  },
+  {
+    "id": "coworker-5002",
+    "name": "Reese",
+    "role": "Server",
+    "lastShift": "2024-10-01",
+    "createdAt": "2024-10-01T23:45:00.000Z"
+  }
+]

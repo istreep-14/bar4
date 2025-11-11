@@ -4,11 +4,10 @@
   "description": "Bar Tracker – shift tracking dashboard with Google Sheets sync",
   "main": "server.js",
   "scripts": {
-    "dev": "vite",
+    "dev": "cross-env NODE_ENV=development node server.js",
     "build": "vite build",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "server": "node server.js"
+    "preview": "cross-env NODE_ENV=production node server.js",
+    "typecheck": "tsc --noEmit"
   },
   "repository": {
     "type": "git",
@@ -31,6 +30,7 @@
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^4.3.2",
+    "cross-env": "^10.1.0",
     "typescript": "^5.9.3",
     "vite": "^5.4.10"
   }
