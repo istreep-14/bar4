@@ -120,6 +120,7 @@ function serializeShiftForRow(shift) {
             const [isAuthenticated, setIsAuthenticated] = useState(false);
             const [authSession, setAuthSession] = useState(() => loadStoredAuthToken());
             const authSessionRef = useRef(authSession);
+            const { config: remoteConfig, loading: configLoading, error: configError } = useConfig();
             const [config, setConfig] = useState({
                 clientId: '',
                 apiKey: '',
@@ -423,18 +424,24 @@ function serializeShiftForRow(shift) {
                 [refreshToken, handleTokenEvent]
             );
 
-            // Load configuration from localStorage
-            useEffect(() => {
-                const savedConfig = localStorage.getItem(CONFIG_STORAGE_KEY);
-                if (savedConfig) {
-                    const parsed = JSON.parse(savedConfig);
-                    setConfig(parsed);
-                    if (parsed.clientId && parsed.apiKey) {
-                        setShowConfig(false);
-                        initializeGoogleAPI(parsed);
-                    }
+        // Load configuration from config hook / localStorage
+        useEffect(() => {
+            if (remoteConfig) {
+                setConfig((prev) => ({ ...prev, ...remoteConfig }));
+                setShowConfig(false);
+                initializeGoogleAPI(remoteConfig);
+                return;
+            }
+            const savedConfig = localStorage.getItem(CONFIG_STORAGE_KEY);
+            if (savedConfig) {
+                const parsed = JSON.parse(savedConfig);
+                setConfig(parsed);
+                if (parsed.clientId && parsed.apiKey) {
+                    setShowConfig(false);
+                    initializeGoogleAPI(parsed);
                 }
-            }, [initializeGoogleAPI]);
+            }
+        }, [remoteConfig, initializeGoogleAPI]);
 
             const handleAuthenticate = async () => {
                 setLoading(true);
@@ -457,45 +464,11 @@ function serializeShiftForRow(shift) {
                 initializeGoogleAPI(config);
             };
 
-            // Attempt to load config from bundled config.json on first run
-            useEffect(() => {
-                if (localStorage.getItem(CONFIG_STORAGE_KEY)) return;
-                if (typeof fetch === 'undefined') return;
-
-                let cancelled = false;
-
-                const fetchRemoteConfig = async () => {
-                    try {
-                        const response = await fetch(REMOTE_CONFIG_PATH, { cache: 'no-store' });
-                        if (!response.ok) return;
-                        const remote = await response.json();
-                        if (cancelled || !remote) return;
-
-                        let nextConfig = null;
-                        setConfig((prev) => {
-                            nextConfig = { ...prev, ...remote };
-                            return nextConfig;
-                        });
-
-                        if (nextConfig) {
-                            localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(nextConfig));
-                        }
-
-                        if (!cancelled && remote.clientId && remote.apiKey && nextConfig) {
-                            setShowConfig(false);
-                            initializeGoogleAPI(nextConfig);
-                        }
-                    } catch (error) {
-                        console.warn('Optional config.json not loaded', error);
-                    }
-                };
-
-                fetchRemoteConfig();
-
-                return () => {
-                    cancelled = true;
-                };
-            }, [initializeGoogleAPI]);
+        useEffect(() => {
+            if (configError) {
+                setError(configError);
+            }
+        }, [configError]);
 
             useEffect(() => {
                 if (!authSession?.accessToken) {
