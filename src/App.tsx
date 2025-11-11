@@ -4,17 +4,20 @@ import Chart from 'chart.js/auto';
 import { APP_SERVER_PORT, CONTROL_SERVER_ORIGIN, ensureAppServerRunning } from './lib/serverControl';
 import { sheetsAPI, SCOPES } from './lib/googleSheets';
 import {
-  loadStoredAuthToken,
-  storeAuthToken,
-  clearStoredAuthToken,
-  loadCachedShifts,
-  storeCachedShifts,
-  loadPendingQueue,
-  storePendingQueue,
-  CONFIG_STORAGE_KEY,
-  REMOTE_CONFIG_PATH,
-  isOnline,
+    loadStoredAuthToken,
+    storeAuthToken,
+    clearStoredAuthToken,
+    loadCachedShifts,
+    storeCachedShifts,
+    loadPendingQueue,
+    storePendingQueue,
+    CONFIG_STORAGE_KEY,
+    REMOTE_CONFIG_PATH,
+    isOnline,
 } from './lib/storage';
+import TipsPage from './components/shift-entry/pages/TipsPage';
+import WagePage from './components/shift-entry/pages/WagePage';
+import SupplementPage from './components/shift-entry/pages/SupplementPage';
 
 const VIEW_MODES = Object.freeze({
   DASHBOARD: 'dashboard',
@@ -6112,344 +6115,43 @@ function serializeShiftForRow(shift) {
                             )}
 
                         {activePage === 'tips' && (
-                            <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
-                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
-                                        <p className="text-xs uppercase tracking-wider text-slate-500">Tip Out</p>
-                                        <p className="mt-3 text-3xl font-semibold text-cyan-300">${toFixed(tipsTotalValue)}</p>
-                                        <p className="text-xs text-slate-500 mt-1">Edit from the overview page.</p>
-                                        <button
-                                            type="button"
-                                            onClick={() => setActivePage('overview')}
-                                            className="text-xs text-cyan-200 hover:text-white flex items-center gap-2 mt-3"
-                                        >
-                                            Adjust Overview
-                                            <i className="fas fa-arrow-right"></i>
-                                        </button>
-                                    </div>
-                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
-                                        <label className="text-xs uppercase tracking-wider text-slate-500">Chump Change</label>
-                                        <input
-                                            type="number"
-                                            step="0.01"
-                                            value={formData.earnings?.tips?.chumpChange ?? ''}
-                                            onChange={(e) => updateFormPath('earnings.tips.chumpChange', e.target.value)}
-                                            className="mt-3 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                            placeholder="0.00"
-                                        />
-                                        <p className="text-xs text-slate-500 mt-2">
-                                            Currently adds ${toFixed(chumpChangeValue)} to reported tips.
-                                        </p>
-                                    </div>
-                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
-                                        <p className="text-xs uppercase tracking-wider text-slate-500">Tips Summary</p>
-                                        <div className="mt-3 space-y-2 text-sm text-slate-300">
-                                            <div className="flex justify-between">
-                                                <span>Tip Out</span>
-                                                <span className="font-semibold text-cyan-300">${toFixed(tipsTotalValue)}</span>
-                                            </div>
-                                            <div className="flex justify-between">
-                                                <span>Chump Change</span>
-                                                <span className="font-semibold text-fuchsia-300">${toFixed(chumpChangeValue)}</span>
-                                            </div>
-                                            <div className="flex justify-between border-t border-slate-800/50 pt-2">
-                                                <span>Total Tips</span>
-                                                <span className="font-bold text-emerald-300">${toFixed(earningsSnapshot.tips.total)}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <p className="text-xs uppercase tracking-wider text-slate-500">Chump Log</p>
-                                        <div className="flex items-center gap-2">
-                                            <label className="text-xs text-slate-500">Played?</label>
-                                            <input
-                                                type="checkbox"
-                                                checked={formData.chump?.played || false}
-                                                onChange={(e) => updateFormPath('chump.played', e.target.checked)}
-                                                className="accent-cyan-500"
-                                            />
-                                        </div>
-                                    </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                                        <input
-                                            type="number"
-                                            step="0.01"
-                                            value={formData.chump?.amount?.total || ''}
-                                            onChange={(e) => updateFormPath('chump.amount.total', e.target.value)}
-                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                            placeholder="Pot total"
-                                        />
-                                        <input
-                                            type="text"
-                                            value={formData.chump?.winner || ''}
-                                            onChange={(e) => updateFormPath('chump.winner', e.target.value)}
-                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                            placeholder="Winner"
-                                        />
-                                        <select
-                                            value={formData.chump?.outcome || ''}
-                                            onChange={(e) => updateFormPath('chump.outcome', e.target.value)}
-                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                        >
-                                            <option value="">Outcome</option>
-                                            <option value="win">Win</option>
-                                            <option value="loss">Loss</option>
-                                            <option value="push">Push</option>
-                                        </select>
-                                    </div>
-                                    <textarea
-                                        value={formData.chump?.notes || ''}
-                                        onChange={(e) => updateFormPath('chump.notes', e.target.value)}
-                                        className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
-                                        placeholder="Notes"
-                                    ></textarea>
-                                </div>
-                            </div>
+                            <TipsPage
+                                formData={formData}
+                                tipsTotalValue={tipsTotalValue}
+                                chumpChangeValue={chumpChangeValue}
+                                earningsSnapshot={earningsSnapshot}
+                                onNavigateOverview={() => setActivePage('overview')}
+                                onUpdate={updateFormPath}
+                                toFixed={toFixed}
+                            />
                         )}
 
                         {activePage === 'wage' && (
-                            <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
-                                <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4">
-                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-3">
-                                        <p className="text-xs uppercase tracking-wider text-slate-500">Wage Clock</p>
-                                        <div>
-                                            <label className="text-xs uppercase text-slate-500">Base Rate</label>
-                                            <input
-                                                type="text"
-                                                value={formData.wage.base ?? ''}
-                                                onChange={(e) => updateFormPath('wage.base', e.target.value)}
-                                                className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="5.00"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="text-xs uppercase text-slate-500">Hours</label>
-                                            <input
-                                                type="text"
-                                                value={formData.wage.hours ?? ''}
-                                                onChange={(e) => updateFormPath('wage.hours', e.target.value)}
-                                                className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="6"
-                                            />
-                                        </div>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                            <div>
-                                                <label className="text-xs uppercase text-slate-500">Clock Start</label>
-                                                <div className="mt-1 space-y-1">
-                                                    <input
-                                                        type="text"
-                                                        inputMode="numeric"
-                                                        value={getTimeDraftValue('wage.clock.start')}
-                                                        onChange={(e) => handleTimeDraftChange('wage.clock.start', e.target.value)}
-                                                        onBlur={(e) => commitTimeValue('wage.clock.start', e.target.value, { mode: 'start' })}
-                                                        onFocus={(e) => e.target.select()}
-                                                        className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="10"
-                                                    />
-                                                    {timeErrors['wage.clock.start'] && (
-                                                        <p className="text-xs text-amber-400">{timeErrors['wage.clock.start']}</p>
-                                                    )}
-                                                </div>
-                                            </div>
-                                            <div>
-                                                <label className="text-xs uppercase text-slate-500">Clock End</label>
-                                                <div className="mt-1 space-y-1">
-                                                    <input
-                                                        type="text"
-                                                        inputMode="numeric"
-                                                        value={getTimeDraftValue('wage.clock.end')}
-                                                        onChange={(e) => handleTimeDraftChange('wage.clock.end', e.target.value)}
-                                                        onBlur={(e) =>
-                                                            commitTimeValue('wage.clock.end', e.target.value, {
-                                                                mode: 'end',
-                                                                referenceStart: formData.wage?.clock?.start,
-                                                            })
-                                                        }
-                                                        onFocus={(e) => e.target.select()}
-                                                        className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="6p"
-                                                    />
-                                                    {timeErrors['wage.clock.end'] && (
-                                                        <p className="text-xs text-amber-400">{timeErrors['wage.clock.end']}</p>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        </div>
-                                        {wageClockHours != null && (
-                                            <p className="text-xs text-slate-500">
-                                                Clocked {wageClockHours.toFixed(2)} hours
-                                            </p>
-                                        )}
-                                        <p className="text-xs text-slate-500">
-                                            Base total ${toFixed(wageTotal)}
-                                        </p>
-                                    </div>
-                                    <div className="space-y-4">
-                                        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
-                                            <p className="text-xs uppercase tracking-wider text-slate-500">Differential</p>
-                                            <div className="mt-3 space-y-2">
-                                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        value={formData.earnings?.wage?.differential?.managerDifferential ?? ''}
-                                                        onChange={(e) => updateFormPath('earnings.wage.differential.managerDifferential', e.target.value)}
-                                                        className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="Manager"
-                                                    />
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        value={formData.earnings?.wage?.differential?.shiftDifferential ?? ''}
-                                                        onChange={(e) => updateFormPath('earnings.wage.differential.shiftDifferential', e.target.value)}
-                                                        className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="Shift"
-                                                    />
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        value={formData.earnings?.wage?.differential?.trainingDifferential ?? ''}
-                                                        onChange={(e) => updateFormPath('earnings.wage.differential.trainingDifferential', e.target.value)}
-                                                        className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                        placeholder="Training"
-                                                    />
-                                                </div>
-                                                <p className="text-xs text-slate-500">
-                                                    Combined ${toFixed(earningsSnapshot.wage.differential.total)}
-                                                </p>
-                                            </div>
-                                        </div>
-                                        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
-                                            <p className="text-xs uppercase tracking-wider text-slate-500">Overtime</p>
-                                            <input
-                                                type="number"
-                                                step="0.01"
-                                                value={formData.earnings?.wage?.overtime ?? formData.earnings?.overtime ?? ''}
-                                                onChange={(e) => updateFormPath('earnings.wage.overtime', e.target.value)}
-                                                className="mt-3 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="0.00"
-                                            />
-                                            <p className="text-xs text-slate-500 mt-2">
-                                                Currently ${toFixed(overtimeInputValue)}
-                                            </p>
-                                        </div>
-                                        <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
-                                            <p className="text-xs uppercase tracking-wider text-slate-500">Wage Summary</p>
-                                            <div className="mt-3 space-y-2 text-sm text-slate-300">
-                                                <div className="flex justify-between">
-                                                    <span>Base</span>
-                                                    <span className="font-semibold text-emerald-300">${toFixed(earningsSnapshot.wage.base)}</span>
-                                                </div>
-                                                <div className="flex justify-between">
-                                                    <span>Differential</span>
-                                                    <span className="font-semibold text-indigo-300">${toFixed(earningsSnapshot.wage.differential.total)}</span>
-                                                </div>
-                                                <div className="flex justify-between">
-                                                    <span>Overtime</span>
-                                                    <span className="font-semibold text-amber-300">${toFixed(earningsSnapshot.wage.overtime)}</span>
-                                                </div>
-                                                <div className="flex justify-between border-t border-slate-800/50 pt-2">
-                                                    <span>Total Wage</span>
-                                                    <span className="font-bold text-cyan-300">${toFixed(earningsSnapshot.wage.total)}</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
+                            <WagePage
+                                formData={formData}
+                                timeErrors={timeErrors}
+                                getTimeDraftValue={getTimeDraftValue}
+                                handleTimeDraftChange={handleTimeDraftChange}
+                                commitTimeValue={commitTimeValue}
+                                updateFormPath={updateFormPath}
+                                wageClockHours={wageClockHours}
+                                wageTotal={wageTotal}
+                                earningsSnapshot={earningsSnapshot}
+                                overtimeInputValue={overtimeInputValue}
+                                toFixed={toFixed}
+                            />
                         )}
 
                         {activePage === 'supplement' && (
-                            <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
-                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                                    <div className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
-                                        <div className="flex items-center justify-between">
-                                            <h4 className="text-sm font-semibold text-slate-200">Consideration</h4>
-                                            <button
-                                                type="button"
-                                                onClick={handleAddConsideration}
-                                                className="text-xs text-cyan-200 hover:text-white flex items-center gap-2"
-                                            >
-                                                <i className="fas fa-plus"></i>
-                                                Item
-                                            </button>
-                                        </div>
-                                        {(formData.consideration?.items || []).map((item, idx) => (
-                                            <div key={idx} className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                                                <input
-                                                    type="text"
-                                                    value={item.from || ''}
-                                                    onChange={(e) => updateFormPath(`consideration.items.${idx}.from`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="From"
-                                                />
-                                                <input
-                                                    type="number"
-                                                    step="0.01"
-                                                    value={item.amount || ''}
-                                                    onChange={(e) => updateFormPath(`consideration.items.${idx}.amount`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Amount"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    value={item.reason || ''}
-                                                    onChange={(e) => updateFormPath(`consideration.items.${idx}.reason`, e.target.value)}
-                                                    className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                    placeholder="Reason"
-                                                />
-                                            </div>
-                                        ))}
-                                        <div className="pt-3 border-t border-slate-800/60 space-y-2">
-                                            <label className="text-xs uppercase tracking-wider text-slate-500">Net Consideration</label>
-                                            <input
-                                                type="number"
-                                                step="0.01"
-                                                value={formData.earnings?.supplement?.consideration ?? ''}
-                                                onChange={(e) => updateFormPath('earnings.supplement.consideration', e.target.value)}
-                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder={toFixed(considerationAuto)}
-                                            />
-                                            <p className="text-xs text-slate-500">
-                                                Auto-sum ${toFixed(considerationAuto)}
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-3">
-                                        <p className="text-xs uppercase tracking-wider text-slate-500">Retention Bonus</p>
-                                        <input
-                                            type="number"
-                                            step="0.01"
-                                            value={formData.earnings?.supplement?.retention ?? formData.supplement?.retention ?? ''}
-                                            onChange={(e) => updateFormPath('earnings.supplement.retention', e.target.value)}
-                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                            placeholder="0.00"
-                                        />
-                                        <p className="text-xs text-slate-500">
-                                            Logged retention ${toFixed(retentionValue)}
-                                        </p>
-                                    </div>
-                                </div>
-                                <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4">
-                                    <p className="text-xs uppercase tracking-wider text-slate-500">Supplement Summary</p>
-                                    <div className="mt-3 space-y-2 text-sm text-slate-300">
-                                        <div className="flex justify-between">
-                                            <span>Consideration</span>
-                                            <span className="font-semibold text-amber-300">${toFixed(considerationValue)}</span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                            <span>Retention</span>
-                                            <span className="font-semibold text-emerald-300">${toFixed(retentionValue)}</span>
-                                        </div>
-                                        <div className="flex justify-between border-t border-slate-800/50 pt-2">
-                                            <span>Total Supplement</span>
-                                            <span className="font-bold text-cyan-300">${toFixed(earningsSnapshot.supplement.total)}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
+                            <SupplementPage
+                                formData={formData}
+                                onUpdate={updateFormPath}
+                                onAddConsideration={handleAddConsideration}
+                                considerationAuto={considerationAuto}
+                                considerationValue={considerationValue}
+                                retentionValue={retentionValue}
+                                toFixed={toFixed}
+                            />
                         )}
 
                         {activePage === 'drinking' && (
