@@ -831,8 +831,29 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                     loading={loading}
                     onStartNewShift={() => startNewShift({ date: new Date().toISOString().split('T')[0] })}
                 >
-                    {showConfig ? null : isAuthenticated ? (
+                    {showConfig ? null : (
                         <>
+                            {!isAuthenticated && (
+                                <div className="glass rounded-xl p-4 mb-6 border border-amber-400/30 bg-amber-500/10 animate-slide-in">
+                                    <div className="flex items-center gap-3">
+                                        <i className="fas fa-plug-circle-xmark text-amber-300 text-xl"></i>
+                                        <div className="flex-1">
+                                            <p className="text-amber-200 font-medium">Working Offline</p>
+                                            <p className="text-amber-100/80 text-sm">
+                                                You can keep logging shifts locally. Connect to Google Sheets to sync when you’re ready.
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={handleAuthenticate}
+                                            disabled={loading}
+                                            className="px-3 py-1.5 rounded-lg border border-amber-400/40 text-amber-100 hover:border-amber-300 hover:bg-amber-500/20 text-sm transition disabled:opacity-60"
+                                        >
+                                            {loading ? 'Connecting…' : 'Connect'}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
                             {view === VIEW_MODES.DASHBOARD && (
                                 <DashboardView
                                     shifts={shifts}
@@ -878,21 +899,6 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
                                 />
                             )}
                         </>
-                    ) : (
-                        <div className="glass rounded-2xl shadow-xl p-12 text-center animate-slide-in border border-slate-800/40">
-                            <div className="bg-slate-900/70 w-20 h-20 rounded-full mx-auto mb-6 flex items-center justify-center">
-                                <i className="fas fa-lock text-4xl text-slate-200"></i>
-                            </div>
-                            <h2 className="text-2xl font-bold text-slate-100 mb-3">Authentication Required</h2>
-                            <p className="text-slate-400 mb-6">Connect to Google Sheets to start tracking your shifts</p>
-                            <button
-                                onClick={handleAuthenticate}
-                                disabled={loading}
-                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-8 py-3 rounded-xl hover:shadow-lg hover:shadow-cyan-500/30 transition-all duration-300 disabled:opacity-50"
-                            >
-                                {loading ? 'Connecting...' : 'Connect Google Sheets'}
-                            </button>
-                        </div>
                     )}
                 </Layout>
             );

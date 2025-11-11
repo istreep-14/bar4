@@ -293,15 +293,15 @@ const Layout: React.FC<LayoutProps> = ({
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                {isAuthenticated && (
-                  <button
-                    onClick={onStartNewShift}
-                    className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-6 py-2.5 rounded-xl hover:shadow-lg hover:shadow-cyan-500/30 transition-all duration-300 flex items-center gap-2"
-                  >
-                    <i className="fas fa-plus"></i>
-                    New Shift
-                  </button>
-                )}
+                <button
+                  onClick={onStartNewShift}
+                  className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-6 py-2.5 rounded-xl hover:shadow-lg hover:shadow-cyan-500/30 transition-all duration-300 flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                  disabled={!onStartNewShift}
+                  type="button"
+                >
+                  <i className="fas fa-plus"></i>
+                  New Shift
+                </button>
                 <button
                   onClick={onToggleConfig}
                   className="bg-slate-900/70 text-slate-200 px-4 py-2.5 rounded-xl hover:bg-slate-800 transition-all duration-300 border border-slate-700"
