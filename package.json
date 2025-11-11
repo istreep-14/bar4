@@ -2,12 +2,12 @@
   "name": "bar-tracker",
   "version": "1.0.0",
   "description": "Bar Tracker – shift tracking dashboard with Google Sheets sync",
-  "main": "control-server.js",
+  "main": "server.js",
   "scripts": {
-    "build": "NODE_ENV=production node esbuild.config.mjs",
-    "dev": "node esbuild.config.mjs --watch",
-    "typecheck": "tsc --noEmit",
-    "start": "npm run build && python3 -m http.server 8000"
+    "dev": "cross-env NODE_ENV=development node server.js",
+    "build": "vite build",
+    "preview": "cross-env NODE_ENV=production node server.js",
+    "typecheck": "tsc --noEmit"
   },
   "repository": {
     "type": "git",
@@ -22,13 +22,16 @@
   "homepage": "https://github.com/istreep-14/bar4#readme",
   "dependencies": {
     "chart.js": "^4.5.1",
+    "express": "^4.21.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
-    "esbuild": "^0.26.0",
-    "typescript": "^5.9.3"
+    "@vitejs/plugin-react": "^4.3.2",
+    "cross-env": "^10.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.10"
   }
 }

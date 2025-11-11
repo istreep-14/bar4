@@ -10,3 +10,4 @@ declare global {
   const gapi: any;
   const google: any;
 }
+

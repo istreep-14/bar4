@@ -1,0 +1,17 @@
+[
+  {
+    "id": "shift-1001",
+    "date": "2024-09-30",
+    "type": "night",
+    "meta": {
+      "notes": "Steady service, patio closed early"
+    },
+    "earnings": {
+      "tips": 320,
+      "wage": 110,
+      "supplement": 35,
+      "total": 465
+    },
+    "createdAt": "2024-10-01T15:32:10.000Z"
+  }
+]
