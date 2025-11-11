@@ -3,6 +3,7 @@
     "target": "es2019",
     "module": "esnext",
     "moduleResolution": "bundler",
+    "allowArbitraryExtensions": true,
     "lib": ["dom", "dom.iterable", "es2020"],
     "jsx": "react-jsx",
     "allowSyntheticDefaultImports": true,
@@ -10,9 +11,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
-    "strict": false,
-    "noEmit": true,
-    "types": []
+      "strict": false,
+      "noEmit": true,
+      "types": []
   },
   "include": ["src"]
 }

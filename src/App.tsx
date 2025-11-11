@@ -18,6 +18,11 @@ import {
 import TipsPage from './components/shift-entry/pages/TipsPage';
 import WagePage from './components/shift-entry/pages/WagePage';
 import SupplementPage from './components/shift-entry/pages/SupplementPage';
+import OverviewPage from './components/shift-entry/pages/OverviewPage';
+import TimingsPage from './components/shift-entry/pages/TimingsPage';
+import CutsPage from './components/shift-entry/pages/CutsPage';
+import PartiesPage from './components/shift-entry/pages/PartiesPage';
+import DrinkingPage from './components/shift-entry/pages/DrinkingPage';
 
 const VIEW_MODES = Object.freeze({
   DASHBOARD: 'dashboard',
@@ -4768,580 +4773,68 @@ function serializeShiftForRow(shift) {
                             <div className="flex flex-col lg:flex-row gap-8">
                                 <div className="flex-1 space-y-8">
                                     {activePage === 'overview' && (
-                                        <>
-                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div className="md:col-span-1">
-                                    <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
-                                        Start Time
-                                          <button type="button" onClick={() => setActivePage('timings')} className="text-slate-500 hover:text-cyan-300">
-                                            <i className="fas fa-clock"></i>
-                                        </button>
-                                    </label>
-                            <div className="mt-2 space-y-1">
-                                <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={getTimeDraftValue('time.base.start')}
-                                    onChange={(e) => handleTimeDraftChange('time.base.start', e.target.value)}
-                                    onBlur={(e) => commitTimeValue('time.base.start', e.target.value, { mode: 'start' })}
-                                    onFocus={(e) => e.target.select()}
-                                    className="w-full px-5 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-2xl tracking-wide focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                    placeholder="e.g. 10"
-                                    required
-                                />
-                                {timeErrors['time.base.start'] && (
-                                    <p className="text-xs text-amber-400">{timeErrors['time.base.start']}</p>
-                                )}
-                            </div>
-                                </div>
-                                <div className="md:col-span-1">
-                                    <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
-                                        End Time
-                                          <button type="button" onClick={() => setActivePage('timings')} className="text-slate-500 hover:text-cyan-300">
-                                            <i className="fas fa-business-time"></i>
-                                        </button>
-                                    </label>
-                            <div className="mt-2 space-y-1">
-                                <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={getTimeDraftValue('time.base.end')}
-                                    onChange={(e) => handleTimeDraftChange('time.base.end', e.target.value)}
-                                    onBlur={(e) =>
-                                        commitTimeValue('time.base.end', e.target.value, {
-                                            mode: 'end',
-                                            referenceStart: formData.time?.base?.start,
-                                        })
-                                    }
-                                    onFocus={(e) => e.target.select()}
-                                    className="w-full px-5 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-2xl tracking-wide focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                    placeholder="e.g. 630"
-                                    required
-                                />
-                                {timeErrors['time.base.end'] && (
-                                    <p className="text-xs text-amber-400">{timeErrors['time.base.end']}</p>
-                                )}
-                            </div>
-                                </div>
-                                <div className="md:col-span-1">
-                                    <label className="text-sm uppercase tracking-wide text-slate-400 flex items-center gap-2">
-                                        <span>Tips</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => updateFormPath('meta.tipsPending', !formData.meta?.tipsPending)}
-                                            className={`text-xs px-2 py-1 rounded-lg border ${formData.meta?.tipsPending ? 'border-amber-400 text-amber-200 bg-amber-400/10' : 'border-slate-600 text-slate-400 hover:border-slate-400'}`}
-                                        >
-                                            {formData.meta?.tipsPending ? 'Mark Received' : 'Mark Pending'}
-                                        </button>
-                                        <button
-                                            type="button"
-                                              onClick={() => setActivePage('cuts')}
-                                            className="icon-button text-slate-500 hover:text-cyan-300"
-                                            title="Open cuts"
-                                        >
-                                            <i className="fas fa-layer-group"></i>
-                                        </button>
-                                    </label>
-                                        <div className="mt-2 relative">
-                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-2xl">$</span>
-                                            <input
-                                                type="text"
-                                                inputMode="decimal"
-                                                pattern="[0-9]*[.,]?[0-9]*"
-                                                value={formData.tips._total ?? ''}
-                                                onChange={(e) => handleTipsChange(e.target.value)}
-                                                onWheel={(e) => e.currentTarget.blur()}
-                                                className="w-full pl-12 pr-4 py-5 bg-slate-900/60 border border-slate-700 rounded-2xl text-3xl font-semibold focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                                placeholder="0.00"
-                                            />
-                                        </div>
-                                </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-                                <div className="glass rounded-2xl p-4 border border-slate-800/60">
-                                    <p className="text-xs uppercase tracking-widest text-slate-500">Total Earnings</p>
-                                    <p className="mt-2 text-3xl font-semibold text-cyan-300">${displayedEarnings.toFixed(2)}</p>
-                                <p className="text-xs text-slate-500 mt-1">Includes tips, wage, supplements</p>
-                                </div>
-                                <div className="glass rounded-2xl p-4 border border-slate-800/60">
-                                    <p className="text-xs uppercase tracking-widest text-slate-500">Hours</p>
-                                    <p className="mt-2 text-3xl font-semibold text-emerald-300">{(calculatedHours || 0).toFixed(1)}h</p>
-                                    <p className="text-xs text-slate-500 mt-1">{formData.time.base.start || '--:--'} &rarr; {formData.time.base.end || '--:--'}</p>
-                                </div>
-                                <div className="glass rounded-2xl p-4 border border-slate-800/60">
-                                    <p className="text-xs uppercase tracking-widest text-slate-500">Hourly</p>
-                                    <p className="mt-2 text-3xl font-semibold text-indigo-300">${displayedHourly.toFixed(2)}</p>
-                                    <p className="text-xs text-slate-500 mt-1">Tips/hr ${tipsPerHour.toFixed(2)}</p>
-                                </div>
-                                <div className="glass rounded-2xl p-4 border border-slate-800/60 flex flex-col gap-3">
-                                    <div className="flex items-center gap-2">
-                                        <i className="fas fa-dice text-sm text-slate-400"></i>
-                                        <span className="text-xs uppercase tracking-widest text-slate-500">Chump</span>
-                                        <span className={`badge-pill ${
-                                            chumpStatus === 'recorded'
-                                                ? 'bg-emerald-400/20 text-emerald-200 border border-emerald-400/40'
-                                                : chumpStatus === 'pending'
-                                                    ? 'bg-amber-400/20 text-amber-200 border border-amber-400/40'
-                                                    : 'bg-slate-800 text-slate-400 border border-slate-700'
-                                        }`}>
-                                            {chumpStatus === 'recorded' ? 'Logged' : chumpStatus === 'pending' ? 'Result Pending' : 'Not Played'}
-                                        </span>
-                                    </div>
-                                <button
-                                    type="button"
-                                    onClick={() => setActivePage('tips')}
-                                    className="text-sm text-cyan-200 hover:text-white flex items-center gap-2"
-                                >
-                                    Manage Tips
-                                    <i className="fas fa-arrow-right"></i>
-                                </button>
-                                </div>
-                            </div>
-
-                            <div className="flex flex-wrap gap-3">
-                                {quickPanels.map((panel) => (
-                                <button
-                                    key={panel.key}
-                                    type="button"
-                                    onClick={() => setActivePage(panel.page)}
-                                    className={`icon-button glass px-4 py-3 rounded-2xl flex items-center gap-3 border border-slate-800/60 ${
-                                        activePage === panel.page ? 'ring-2 ring-cyan-500/40' : ''
-                                    }`}
-                                >
-                                        <div className="relative">
-                                            <span className="w-8 h-8 rounded-xl bg-slate-900/70 flex items-center justify-center text-cyan-300">
-                                                <i className={`fas ${panel.icon}`}></i>
-                                            </span>
-                                        <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full shadow ${statusBadgeClass(panel.status)}`}></span>
-                                        </div>
-                                        <div className="text-left">
-                                            <p className="text-xs uppercase tracking-wider text-slate-400">{panel.label}</p>
-                                            <p className="text-sm font-semibold text-slate-200">{panel.metric || '—'}</p>
-                                        </div>
-                                    <i
-                                        className={`fas ${
-                                            activePage === panel.page ? 'fa-circle-dot text-cyan-200' : 'fa-arrow-right text-slate-600'
-                                        }`}
-                                    ></i>
-                                    </button>
-                                ))}
-                                <button
-                                    type="button"
-                                onClick={() => {
-                                    handleAddParty();
-                                    setActivePage('parties');
-                                }}
-                                    className="icon-button glass px-4 py-3 rounded-2xl flex items-center gap-2 text-slate-200 border border-slate-800/60 hover:border-cyan-500/50"
-                                >
-                                    <i className="fas fa-plus"></i>
-                                    Quick Add Party
-                                </button>
-                            </div>
-
-                        </>
-                    )}
+                                        <OverviewPage
+                                            formData={formData}
+                                            activePage={activePage}
+                                            timeErrors={timeErrors}
+                                            getTimeDraftValue={getTimeDraftValue}
+                                            handleTimeDraftChange={handleTimeDraftChange}
+                                            commitTimeValue={commitTimeValue}
+                                            updateFormPath={updateFormPath}
+                                            handleTipsChange={handleTipsChange}
+                                            calculatedHours={calculatedHours}
+                                            displayedEarnings={displayedEarnings}
+                                            displayedHourly={displayedHourly}
+                                            tipsPerHour={tipsPerHour}
+                                            chumpStatus={chumpStatus}
+                                            quickPanels={quickPanels}
+                                            statusBadgeClass={statusBadgeClass}
+                                            onNavigate={setActivePage}
+                                            onAddParty={handleAddParty}
+                                        />
+                                    )}
                                     {activePage === 'timings' && (
-                                        <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                            <h3 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
-                                                <i className="fas fa-clock text-slate-400"></i>
-                                                Timing Buckets
-                                            </h3>
-                                      {['present', 'clock', 'tips', 'working'].map((bucket) => (
-                                          <div key={bucket} className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
-                                              <div className="md:col-span-1">
-                                                  <p className="text-xs uppercase tracking-wider text-slate-500">{bucket.toUpperCase()}</p>
-                                              </div>
-                                              <div className="md:col-span-1">
-                                                  <label className="text-xs text-slate-500">Start</label>
-                                                  <div className="mt-1 space-y-1">
-                                                      <input
-                                                          type="text"
-                                                          inputMode="numeric"
-                                                          value={getTimeDraftValue(`time.${bucket}.start`)}
-                                                          onChange={(e) => handleTimeDraftChange(`time.${bucket}.start`, e.target.value)}
-                                                          onBlur={(e) => commitTimeValue(`time.${bucket}.start`, e.target.value, { mode: 'start' })}
-                                                          onFocus={(e) => e.target.select()}
-                                                          className="w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                          placeholder="e.g. 4p"
-                                                      />
-                                                      {timeErrors[`time.${bucket}.start`] && (
-                                                          <p className="text-xs text-amber-400">{timeErrors[`time.${bucket}.start`]}</p>
-                                                      )}
-                                                  </div>
-                                              </div>
-                                              <div className="md:col-span-1">
-                                                  <label className="text-xs text-slate-500">End</label>
-                                                  <div className="mt-1 space-y-1">
-                                                      <input
-                                                          type="text"
-                                                          inputMode="numeric"
-                                                          value={getTimeDraftValue(`time.${bucket}.end`)}
-                                                          onChange={(e) => handleTimeDraftChange(`time.${bucket}.end`, e.target.value)}
-                                                          onBlur={(e) =>
-                                                              commitTimeValue(`time.${bucket}.end`, e.target.value, {
-                                                                  mode: 'end',
-                                                                  referenceStart: formData.time?.[bucket]?.start,
-                                                              })
-                                                          }
-                                                          onFocus={(e) => e.target.select()}
-                                                          className="w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                          placeholder="e.g. 1230"
-                                                      />
-                                                      {timeErrors[`time.${bucket}.end`] && (
-                                                          <p className="text-xs text-amber-400">{timeErrors[`time.${bucket}.end`]}</p>
-                                                      )}
-                                                  </div>
-                                              </div>
-                                              <div className="md:col-span-1">
-                                                  <label className="text-xs text-slate-500">Hours</label>
-                                                  <input
-                                                      type="number"
-                                                      step="0.25"
-                                                      value={formData.time[bucket]?.hours || ''}
-                                                      onChange={(e) => updateFormPath(`time.${bucket}.hours`, e.target.value === '' ? '' : parseFloat(e.target.value))}
-                                                      className="mt-1 w-full px-4 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                  />
-                                              </div>
-                                          </div>
-                                      ))}
-                                  </div>
-                              )}
+                                        <TimingsPage
+                                            formData={formData}
+                                            timeErrors={timeErrors}
+                                            getTimeDraftValue={getTimeDraftValue}
+                                            handleTimeDraftChange={handleTimeDraftChange}
+                                            commitTimeValue={commitTimeValue}
+                                            updateFormPath={updateFormPath}
+                                        />
+                                    )}
 
-                        {activePage === 'cuts' && (
-                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                        <div className="flex items-center justify-between">
-                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
-                                                <i className="fas fa-layer-group text-slate-400"></i>
-                                                Cuts
-                                            </h3>
-                                            <button type="button" onClick={handleAddCut} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
-                                                <i className="fas fa-plus"></i>
-                                                Custom Cut
-                                            </button>
-                                        </div>
-                                    <div className="space-y-3">
-                                        {Object.entries(formData.cuts || {}).map(([key, cut]) => {
-                                            const expanded = !!expandedCuts[key];
-                        const baseCut = ['day', 'mid', 'night'].includes(key);
-                                            const label = cut.label || key.charAt(0).toUpperCase() + key.slice(1);
-                                            return (
-                                                <div key={key} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
-                                                    <div className="flex flex-col md:flex-row md:items-center gap-3 justify-between">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => toggleCutDetails(key)}
-                                                            className="flex items-center gap-3 text-left text-slate-100 hover:text-cyan-200 transition"
-                                                        >
-                                                            <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">{label}</span>
-                                                            <i className={`fas fa-chevron-${expanded ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                                        </button>
-                                                        <div className="flex items-center gap-2">
-                                                            <label className="text-xs uppercase text-slate-500">My Tips</label>
-                                                            <input
-                                                                type="text"
-                                                                value={cut.me?.tips ?? ''}
-                                                                onChange={(e) => updateFormPath(`cuts.${key}.me.tips`, e.target.value)}
-                                                                className="px-3 py-1.5 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                placeholder="0.00"
-                                                            />
-                                                        </div>
-                                                        {!baseCut && (
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => deleteCut(key)}
-                                                                className="text-xs text-rose-300 hover:text-rose-100 px-3 py-1 border border-rose-500/40 rounded-lg"
-                                                            >
-                                                                <i className="fas fa-trash"></i>
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                    {expanded && (
-                                                        <div className="space-y-4 border-t border-slate-800/60 pt-4">
-                                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Label</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={cut.label || ''}
-                                                                        onChange={(e) => updateFormPath(`cuts.${key}.label`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="Label"
-                                                                    />
-                                                                </div>
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Status</label>
-                                                                    <select
-                                                                        value={cut.status || 'pending'}
-                                                                        onChange={(e) => updateFormPath(`cuts.${key}.status`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                    >
-                                                                        <option value="pending">Pending</option>
-                                                                        <option value="estimated">Estimated</option>
-                                                                        <option value="confirmed">Confirmed</option>
-                                                                    </select>
-                                                                </div>
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">My Hours</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={cut.me?.hours ?? ''}
-                                                                        onChange={(e) => updateFormPath(`cuts.${key}.me.hours`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="0"
-                                                                    />
-                                                                </div>
-                                                            </div>
-                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Pool Total</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={cut.total?.tips ?? ''}
-                                                                        onChange={(e) => updateFormPath(`cuts.${key}.total.tips`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="optional"
-                                                                    />
-                                                                </div>
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Pool Hours</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={cut.total?.hours ?? ''}
-                                                                        onChange={(e) => updateFormPath(`cuts.${key}.total.hours`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="optional"
-                                                                    />
-                                                                </div>
-                                                            </div>
-                                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Share %</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={cut.share?.pct ?? ''}
-                                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.pct`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="optional"
-                                                                    />
-                                                                </div>
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">People</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={cut.share?.people ?? ''}
-                                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.people`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="optional"
-                                                                    />
-                                                                </div>
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Notes</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={cut.share?.notes ?? ''}
-                                                                        onChange={(e) => updateFormPath(`cuts.${key}.share.notes`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="Team, weighting, etc."
-                                                                    />
-                                                                </div>
-                                                            </div>
-                                                            <div className="flex justify-end gap-2">
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => cancelCutSection(key)}
-                                                                    className="px-4 py-2 border border-slate-700 text-slate-300 rounded-xl hover:border-slate-500"
-                                                                >
-                                                                    Cancel
-                                                                </button>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => saveCutSection(key)}
-                                                                    className="px-4 py-2 bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 rounded-xl hover:bg-cyan-500/30"
-                                                                >
-                                                                    Save &amp; Close
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            )}
+                                    {activePage === 'cuts' && (
+                                        <CutsPage
+                                            formData={formData}
+                                            expandedCuts={expandedCuts}
+                                            onToggleCut={toggleCutDetails}
+                                            onAddCut={handleAddCut}
+                                            onUpdate={updateFormPath}
+                                            onDeleteCut={deleteCut}
+                                            onCancelCut={cancelCutSection}
+                                            onSaveCut={saveCutSection}
+                                        />
+                                    )}
 
                         {activePage === 'parties' && (
-                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                      <div className="flex items-center justify-between">
-                                          <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
-                                              <i className="fas fa-martini-glass-citrus text-slate-400"></i>
-                                              Parties &amp; Events
-                                          </h3>
-                                          <button type="button" onClick={handleAddParty} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
-                                              <i className="fas fa-plus"></i>
-                                              Add Party
-                                          </button>
-                                      </div>
-                                    {partyCount === 0 && <p className="text-sm text-slate-500">No parties logged yet.</p>}
-                                    <div className="space-y-3">
-                                        {Object.entries(formData.parties || {}).map(([id, party], index) => {
-                                            const expanded = !!expandedParties[id];
-                                            const partyLabel = party.name || `Party ${index + 1}`;
-                                            const defaultCutType = formData.type === 'day' ? 'day' : 'night';
-                                            return (
-                                                <div key={id} className="border border-slate-800/60 rounded-2xl p-4 bg-slate-900/40 space-y-4">
-                                                    <div className="flex flex-col md:flex-row md:items-center gap-3 justify-between">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => togglePartyDetails(id)}
-                                                            className="flex items-center gap-3 text-left text-slate-100 hover:text-cyan-200 transition"
-                                                        >
-                                                            <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
-                                                                {`Party ${index + 1}`}
-                                                            </span>
-                                                            <span>{partyLabel}</span>
-                                                            <i className={`fas fa-chevron-${expanded ? 'up' : 'down'} text-xs text-slate-500`}></i>
-                                                        </button>
-                                                        <div className="flex items-center gap-2">
-                                                            <select
-                                                                value={party.cutType || defaultCutType}
-                                                                onChange={(e) => updateFormPath(`parties.${id}.cutType`, e.target.value)}
-                                                                className="px-3 py-1.5 bg-slate-900/60 border border-slate-700 rounded-xl text-xs"
-                                                            >
-                                                                <option value="day">Day</option>
-                                                                <option value="night">Night</option>
-                                                            </select>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleDeleteParty(id)}
-                                                                className="text-xs text-rose-300 hover:text-rose-100 px-3 py-1 border border-rose-500/40 rounded-lg"
-                                                            >
-                                                                <i className="fas fa-trash"></i>
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                    {expanded && (
-                                                        <div className="space-y-4 border-t border-slate-800/60 pt-4">
-                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Party Name</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={party.name || ''}
-                                                                        onChange={(e) => updateFormPath(`parties.${id}.name`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="Party Name"
-                                                                    />
-                                                                </div>
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Location</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={party.location || ''}
-                                                                        onChange={(e) => updateFormPath(`parties.${id}.location`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="Bar, Room, Patio..."
-                                                                    />
-                                                                </div>
-                                                            </div>
-                                                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Start</label>
-                                                                    <div className="mt-1 space-y-1">
-                                                                        <input
-                                                                            type="text"
-                                                                            inputMode="numeric"
-                                                                            value={getTimeDraftValue(`parties.${id}.time.start`)}
-                                                                            onChange={(e) => handleTimeDraftChange(`parties.${id}.time.start`, e.target.value)}
-                                                                            onBlur={(e) =>
-                                                                                commitTimeValue(`parties.${id}.time.start`, e.target.value, {
-                                                                                    mode: 'start',
-                                                                                })
-                                                                            }
-                                                                            onFocus={(e) => e.target.select()}
-                                                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                            placeholder="e.g. 3"
-                                                                        />
-                                                                        {timeErrors[`parties.${id}.time.start`] && (
-                                                                            <p className="text-xs text-amber-400">{timeErrors[`parties.${id}.time.start`]}</p>
-                                                                        )}
-                                                                    </div>
-                                                                </div>
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">End</label>
-                                                                    <div className="mt-1 space-y-1">
-                                                                        <input
-                                                                            type="text"
-                                                                            inputMode="numeric"
-                                                                            value={getTimeDraftValue(`parties.${id}.time.end`)}
-                                                                            onChange={(e) => handleTimeDraftChange(`parties.${id}.time.end`, e.target.value)}
-                                                                            onBlur={(e) =>
-                                                                                commitTimeValue(`parties.${id}.time.end`, e.target.value, {
-                                                                                    mode: 'end',
-                                                                                    referenceStart: party.time?.start,
-                                                                                })
-                                                                            }
-                                                                            onFocus={(e) => e.target.select()}
-                                                                            className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                            placeholder="e.g. 630"
-                                                                        />
-                                                                        {timeErrors[`parties.${id}.time.end`] && (
-                                                                            <p className="text-xs text-amber-400">{timeErrors[`parties.${id}.time.end`]}</p>
-                                                                        )}
-                                                                    </div>
-                                                                </div>
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Gratuity</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={party.tips?.gratuity ?? ''}
-                                                                        onChange={(e) => updateFormPath(`parties.${id}.tips.gratuity`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="≈800"
-                                                                    />
-                                                                </div>
-                                                                <div>
-                                                                    <label className="text-xs uppercase text-slate-500">Cash Tips</label>
-                                                                    <input
-                                                                        type="text"
-                                                                        value={party.tips?.cashTips ?? ''}
-                                                                        onChange={(e) => updateFormPath(`parties.${id}.tips.cashTips`, e.target.value)}
-                                                                        className="mt-1 w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                                        placeholder="optional"
-                                                                    />
-                                                                </div>
-                                                            </div>
-                                                            <textarea
-                                                                value={party.notes || ''}
-                                                                onChange={(e) => updateFormPath(`parties.${id}.notes`, e.target.value)}
-                                                                className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl text-sm"
-                                                                placeholder="Notes (helpers, packages, setup)"
-                                                            ></textarea>
-                                                            <div className="flex justify-end gap-2">
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => cancelPartySection(id)}
-                                                                    className="px-4 py-2 border border-slate-700 text-slate-300 rounded-xl hover:border-slate-500"
-                                                                >
-                                                                    Cancel
-                                                                </button>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => savePartySection(id)}
-                                                                    className="px-4 py-2 bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 rounded-xl hover:bg-cyan-500/30"
-                                                                >
-                                                                    Save &amp; Close
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            )}
+                            <PartiesPage
+                                formData={formData}
+                                partyCount={partyCount}
+                                expandedParties={expandedParties}
+                                shiftType={formData.type}
+                                timeErrors={timeErrors}
+                                getTimeDraftValue={getTimeDraftValue}
+                                handleTimeDraftChange={handleTimeDraftChange}
+                                commitTimeValue={commitTimeValue}
+                                updateFormPath={updateFormPath}
+                                onToggleParty={togglePartyDetails}
+                                onAddParty={handleAddParty}
+                                onDeleteParty={handleDeleteParty}
+                                onCancelParty={cancelPartySection}
+                                onSaveParty={savePartySection}
+                            />
+                        )}
 
                         {activePage === 'crew' && (
                                 <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-6">
@@ -6155,84 +5648,13 @@ function serializeShiftForRow(shift) {
                         )}
 
                         {activePage === 'drinking' && (
-                                <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-4">
-                                        <div className="flex items-center justify-between">
-                                            <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
-                                                <i className="fas fa-wine-glass text-slate-400"></i>
-                                                On-Shift Drinking
-                                            </h3>
-                                        <button type="button" onClick={handleAddDrinkingItem} className="text-sm text-cyan-200 hover:text-white flex items-center gap-2">
-                                            <i className="fas fa-plus"></i>
-                                            Add Item
-                                        </button>
-                                    </div>
-                                    {(formData.drinking?.items || []).map((item, idx) => (
-                                        <div key={idx} className="grid grid-cols-1 md:grid-cols-6 gap-2">
-                                            <input
-                                                type="text"
-                                                value={item.name || ''}
-                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.name`, e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="Name"
-                                            />
-                                            <input
-                                                type="text"
-                                                value={item.code || ''}
-                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.code`, e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="Code"
-                                            />
-                                            <input
-                                                type="number"
-                                                step="0.1"
-                                                value={item.abv || ''}
-                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.abv`, e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="ABV%"
-                                            />
-                                            <input
-                                                type="number"
-                                                step="0.5"
-                                                value={item.oz || ''}
-                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.oz`, e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="Oz"
-                                            />
-                                            <input
-                                                type="number"
-                                                step="0.1"
-                                                value={item.quantity || 1}
-                                                onChange={(e) => updateFormPath(`drinking.items.${idx}.quantity`, e.target.value)}
-                                                className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                placeholder="Qty"
-                                            />
-                                              <input
-                                                  type="number"
-                                                  step="0.01"
-                                                  value={item.sbe || ''}
-                                                  onChange={(e) => updateFormPath(`drinking.items.${idx}.sbe`, e.target.value)}
-                                                  className="px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-xl"
-                                                  placeholder="SBE"
-                                              />
-                                              <div className="flex items-center justify-end gap-2 md:col-span-6">
-                                                  <button
-                                                      type="button"
-                                                      onClick={() => duplicateDrinkingItem(idx)}
-                                                      className="text-xs px-3 py-1.5 border border-slate-700 text-slate-300 rounded-lg hover:border-cyan-500/40"
-                                                  >
-                                                      Duplicate
-                                                  </button>
-                                                  <button
-                                                      type="button"
-                                                      onClick={() => handleDeleteDrinkingItem(idx)}
-                                                      className="text-xs px-3 py-1.5 border border-rose-500/40 text-rose-300 rounded-lg hover:bg-rose-500/10"
-                                                  >
-                                                      Remove
-                                                  </button>
-                                              </div>
-                                          </div>
-                                    ))}
-                                </div>
+                                <DrinkingPage
+                                    items={formData.drinking?.items || []}
+                                    onAddItem={handleAddDrinkingItem}
+                                    onDuplicateItem={duplicateDrinkingItem}
+                                    onDeleteItem={handleDeleteDrinkingItem}
+                                    onUpdate={updateFormPath}
+                                />
                             )}
 
                         </div>
@@ -6266,18 +5688,6 @@ function serializeShiftForRow(shift) {
                             })}
                         </aside>
                     </div>
-
-                    {activePage === 'overview' && (
-                        <div className="glass rounded-2xl p-6 border border-slate-800/60 space-y-3">
-                            <label className="text-xs uppercase tracking-widest text-slate-500">Shift Notes</label>
-                            <textarea
-                                value={formData.meta?.notes || ''}
-                                onChange={(e) => updateFormPath('meta.notes', e.target.value)}
-                                className="w-full min-h-[120px] px-4 py-3 bg-slate-900/60 border border-slate-700 rounded-2xl text-sm"
-                                placeholder="Context, observations, weather, promotions..."
-                            ></textarea>
-                        </div>
-                    )}
 
                     <div className="flex flex-wrap gap-4 justify-end">
                         <button
