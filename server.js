@@ -50,6 +50,17 @@ async function createServer() {
       appType: 'custom',
     });
     app.use(vite.middlewares);
+    app.use('*', async (req, res, next) => {
+      try {
+        const url = req.originalUrl;
+        const template = fs.readFileSync(resolvePath('index.html'), 'utf-8');
+        const html = await vite.transformIndexHtml(url, template);
+        res.status(200).setHeader('Content-Type', 'text/html').end(html);
+      } catch (err) {
+        vite.ssrFixStacktrace?.(err);
+        next(err);
+      }
+    });
     console.log(`➜  Dev server ready at http://localhost:${port}`);
   } else {
     const distDir = resolvePath('dist');
