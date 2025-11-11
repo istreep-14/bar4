@@ -80,7 +80,7 @@ const getSheetsErrorMessage = (error, fallback = 'Google Sheets request failed.'
             useEffect(() => {
                 if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) {
                     setSidebarCollapsed(true);
-                } else if (view === VIEW_MODES.DASHBOARD || view === VIEW_MODES.SHIFT_DETAIL) {
+                } else if (view === VIEW_MODES.DASHBOARD || view === VIEW_MODES.SHIFT_VIEW) {
                     setSidebarCollapsed(false);
                 }
             }, [view]);
