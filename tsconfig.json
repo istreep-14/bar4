@@ -11,9 +11,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
-      "strict": false,
-      "noEmit": true,
-      "types": []
+    "strict": false,
+    "noEmit": true,
+    "types": ["vite/client"]
   },
   "include": ["src"]
 }
