@@ -1,32 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import Chart from 'chart.js/auto';
-import { Routes, Route, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { APP_SERVER_PORT, CONTROL_SERVER_ORIGIN, ensureAppServerRunning } from './lib/serverControl';
-import { sheetsAPI, SCOPES } from './lib/googleSheets';
-import {
-  loadStoredAuthToken,
-  storeAuthToken,
-  clearStoredAuthToken,
-  CONFIG_STORAGE_KEY,
-  REMOTE_CONFIG_PATH,
-  isOnline,
-} from './lib/storage';
-import { useShiftManager } from './hooks/useShiftManager';
-import { getSheetsErrorMessage } from './lib/sheetsHelpers';
-import CrewDatabasePage from './pages/CrewDatabasePage';
-import DashboardPage from './pages/DashboardPage';
-import ShiftEntryPage from './pages/ShiftEntryPage';
 
-const VIEW_MODES = Object.freeze({
-  DASHBOARD: 'dashboard',
-  SHIFT_CREATE: 'shift-create',
-  SHIFT_EDIT: 'shift-edit',
-  SHIFT_VIEW: 'shift-view',
-  COWORKERS: 'coworkers',
-});
-
-const CREW_POSITION_OPTIONS = ['Bartender', 'Server', 'Expo', 'Busser', 'Hostess', 'Door'];
 
 function serializeShiftForRow(shift) {
             const totalEarnings = parseFloat(shift?.earnings?.total ?? 0) || 0;
@@ -114,13 +88,13 @@ function serializeShiftForRow(shift) {
 
         // Main App Component
         function App() {
-            const navigate = useNavigate();
-            const location = useLocation();
-            const [view, setViewState] = useState(VIEW_MODES.DASHBOARD);
+            const [view, setView] = useState(VIEW_MODES.DASHBOARD);
+            const [shifts, setShifts] = useState(() => loadCachedShifts() || []);
+            const [currentShift, setCurrentShift] = useState(null);
             const [isAuthenticated, setIsAuthenticated] = useState(false);
             const [authSession, setAuthSession] = useState(() => loadStoredAuthToken());
             const authSessionRef = useRef(authSession);
-            const { config: remoteConfig, loading: configLoading, error: configError } = useConfig();
+            const coworkerSheetMetaRef = useRef({ ensured: false, sheetId: null });
             const [config, setConfig] = useState({
                 clientId: '',
                 apiKey: '',
@@ -134,82 +108,13 @@ function serializeShiftForRow(shift) {
                   state: 'checking',
                   message: `Ensuring local server is running on port ${APP_SERVER_PORT}...`,
               });
+            const [coworkerDirectory, setCoworkerDirectory] = useState([]);
             const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-
-            const {
-                shifts,
-                currentShift,
-                setCurrentShift,
-                coworkerDirectory,
-                loadShifts,
-                loadCoworkerDirectory,
-                upsertCoworkerRecord,
-                deleteCoworkerRecord,
-                syncPendingShifts,
-                saveShift: saveShiftInternal,
-                deleteShift: deleteShiftInternal,
-                createShiftDraft,
-                createShiftDraftForDate,
-                getShiftById,
-            } = useShiftManager({
-                config,
-                isAuthenticated,
-                setLoading,
-                setError,
-            });
-
-            const setView = useCallback(
-                (nextView, options = {}) => {
-                    setViewState(nextView);
-                    switch (nextView) {
-                        case VIEW_MODES.DASHBOARD:
-                            navigate('/');
-                            break;
-                        case VIEW_MODES.SHIFT_CREATE:
-                            navigate('/shift/new');
-                            break;
-                        case VIEW_MODES.COWORKERS:
-                            navigate('/crew');
-                            break;
-                        case VIEW_MODES.SHIFT_EDIT: {
-                            const shiftId = options.shiftId || currentShift?.id;
-                            navigate(shiftId ? `/shift/${encodeURIComponent(shiftId)}/edit` : '/shift/new');
-                            break;
-                        }
-                        case VIEW_MODES.SHIFT_VIEW: {
-                            const shiftId = options.shiftId || currentShift?.id;
-                            navigate(shiftId ? `/shift/${encodeURIComponent(shiftId)}/view` : '/shift/new');
-                            break;
-                        }
-                        default:
-                            navigate('/');
-                            break;
-                    }
-                },
-                [navigate, currentShift]
-            );
-
-            useEffect(() => {
-                const path = location.pathname || '/';
-                let nextView = VIEW_MODES.DASHBOARD;
-                if (path.startsWith('/crew')) {
-                    nextView = VIEW_MODES.COWORKERS;
-                } else if (path.startsWith('/shift/new')) {
-                    nextView = VIEW_MODES.SHIFT_CREATE;
-                } else if (/^\/shift\/[^/]+\/edit/.test(path)) {
-                    nextView = VIEW_MODES.SHIFT_EDIT;
-                } else if (/^\/shift\/[^/]+\/view/.test(path)) {
-                    nextView = VIEW_MODES.SHIFT_VIEW;
-                }
-                if (nextView !== view) {
-                    setViewState(nextView);
-                }
-            }, [location.pathname, view]);
 
             useEffect(() => {
                 if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) {
                     setSidebarCollapsed(true);
-                } else if (view === VIEW_MODES.DASHBOARD || view === VIEW_MODES.SHIFT_VIEW) {
+                } else if (view === VIEW_MODES.DASHBOARD || view === VIEW_MODES.SHIFT_DETAIL) {
                     setSidebarCollapsed(false);
                 }
             }, [view]);
@@ -217,82 +122,6 @@ function serializeShiftForRow(shift) {
             useEffect(() => {
                 authSessionRef.current = authSession;
             }, [authSession]);
-
-            useEffect(() => {
-                if (!isAuthenticated || !config.spreadsheetId) return;
-                loadShifts();
-            }, [isAuthenticated, config.spreadsheetId, loadShifts]);
-
-            useEffect(() => {
-                if (!isAuthenticated || !config.spreadsheetId) return;
-                loadCoworkerDirectory();
-            }, [isAuthenticated, config.spreadsheetId, loadCoworkerDirectory]);
-
-            useEffect(() => {
-                syncPendingShifts();
-            }, [syncPendingShifts]);
-
-            useEffect(() => {
-                const handleOnline = () => {
-                    syncPendingShifts();
-                    refreshToken('silent');
-                };
-                window.addEventListener('online', handleOnline);
-                return () => {
-                    window.removeEventListener('online', handleOnline);
-                };
-            }, [syncPendingShifts, refreshToken]);
-
-            const startNewShift = useCallback(
-                (seed = {}) => {
-                    createShiftDraft(seed);
-                    setView(VIEW_MODES.SHIFT_CREATE);
-                },
-                [createShiftDraft, setView]
-            );
-
-            const startNewShiftForDate = useCallback(
-                (dateKey) => {
-                    createShiftDraftForDate(dateKey);
-                    setView(VIEW_MODES.SHIFT_CREATE);
-                },
-                [createShiftDraftForDate, setView]
-            );
-
-            const saveShift = useCallback(
-                async (shiftData) => {
-                    await saveShiftInternal(shiftData);
-                    setView(VIEW_MODES.DASHBOARD);
-                },
-                [saveShiftInternal, setView]
-            );
-
-            const deleteShift = useCallback(
-                async (shiftId) => {
-                    if (!confirm('Are you sure you want to delete this shift?')) return;
-                    await deleteShiftInternal(shiftId);
-                    if (view === VIEW_MODES.SHIFT_VIEW && currentShift?.id === shiftId) {
-                        setView(VIEW_MODES.DASHBOARD);
-                    }
-                },
-                [deleteShiftInternal, view, currentShift, setView]
-            );
-
-            const editShift = useCallback(
-                (shift) => {
-                    setCurrentShift(shift.data);
-                    setView(VIEW_MODES.SHIFT_EDIT, { shiftId: shift?.id });
-                },
-                [setCurrentShift, setView]
-            );
-
-            const viewShift = useCallback(
-                (shift) => {
-                    setCurrentShift(shift.data);
-                    setView(VIEW_MODES.SHIFT_VIEW, { shiftId: shift?.id });
-                },
-                [setCurrentShift, setView]
-            );
 
             const handleTokenEvent = useCallback(
                 (tokenInfo) => {
@@ -424,24 +253,18 @@ function serializeShiftForRow(shift) {
                 [refreshToken, handleTokenEvent]
             );
 
-        // Load configuration from config hook / localStorage
-        useEffect(() => {
-            if (remoteConfig) {
-                setConfig((prev) => ({ ...prev, ...remoteConfig }));
-                setShowConfig(false);
-                initializeGoogleAPI(remoteConfig);
-                return;
-            }
-            const savedConfig = localStorage.getItem(CONFIG_STORAGE_KEY);
-            if (savedConfig) {
-                const parsed = JSON.parse(savedConfig);
-                setConfig(parsed);
-                if (parsed.clientId && parsed.apiKey) {
-                    setShowConfig(false);
-                    initializeGoogleAPI(parsed);
+            // Load configuration from localStorage
+            useEffect(() => {
+                const savedConfig = localStorage.getItem(CONFIG_STORAGE_KEY);
+                if (savedConfig) {
+                    const parsed = JSON.parse(savedConfig);
+                    setConfig(parsed);
+                    if (parsed.clientId && parsed.apiKey) {
+                        setShowConfig(false);
+                        initializeGoogleAPI(parsed);
+                    }
                 }
-            }
-        }, [remoteConfig, initializeGoogleAPI]);
+            }, [initializeGoogleAPI]);
 
             const handleAuthenticate = async () => {
                 setLoading(true);
@@ -464,11 +287,45 @@ function serializeShiftForRow(shift) {
                 initializeGoogleAPI(config);
             };
 
-        useEffect(() => {
-            if (configError) {
-                setError(configError);
-            }
-        }, [configError]);
+            // Attempt to load config from bundled config.json on first run
+            useEffect(() => {
+                if (localStorage.getItem(CONFIG_STORAGE_KEY)) return;
+                if (typeof fetch === 'undefined') return;
+
+                let cancelled = false;
+
+                const fetchRemoteConfig = async () => {
+                    try {
+                        const response = await fetch(REMOTE_CONFIG_PATH, { cache: 'no-store' });
+                        if (!response.ok) return;
+                        const remote = await response.json();
+                        if (cancelled || !remote) return;
+
+                        let nextConfig = null;
+                        setConfig((prev) => {
+                            nextConfig = { ...prev, ...remote };
+                            return nextConfig;
+                        });
+
+                        if (nextConfig) {
+                            localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(nextConfig));
+                        }
+
+                        if (!cancelled && remote.clientId && remote.apiKey && nextConfig) {
+                            setShowConfig(false);
+                            initializeGoogleAPI(nextConfig);
+                        }
+                    } catch (error) {
+                        console.warn('Optional config.json not loaded', error);
+                    }
+                };
+
+                fetchRemoteConfig();
+
+                return () => {
+                    cancelled = true;
+                };
+            }, [initializeGoogleAPI]);
 
             useEffect(() => {
                 if (!authSession?.accessToken) {
@@ -500,101 +357,479 @@ function serializeShiftForRow(shift) {
                 return () => clearTimeout(timer);
             }, [authSession, refreshToken]);
 
-            if (configLoading) {
-                return (
-                    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
-                        <div className="space-y-3 text-center">
-                            <div className="text-sm uppercase tracking-[0.4em] text-slate-500">Bar Tracker</div>
-                            <div className="text-lg font-semibold text-slate-200">Loading configuration…</div>
-                        </div>
-                    </div>
-                );
-            }
+            const loadShifts = useCallback(async () => {
+                if (!config.spreadsheetId || !isAuthenticated) return;
+                
+                setLoading(true);
+                setError(null);
+                try {
+                    const range = `${config.sheetName}!A2:F`;
+                    const response = await sheetsAPI.readData(config.spreadsheetId, range);
+                    const values = response || [];
+                    const loadedShifts = values
+                        .map((row, index) => deserializeShiftRow(index + 2, row))
+                        .filter(Boolean);
+                    setShifts(loadedShifts);
+                    storeCachedShifts(loadedShifts);
+                } catch (error) {
+                    console.warn('Failed to fetch shifts from Sheets', error);
+                    const cached = loadCachedShifts();
+                    if (cached && cached.length) {
+                        setShifts(cached);
+                        setError('Offline mode: showing cached shifts.');
+                    } else {
+                        setError('Failed to load shifts: ' + error.message);
+                    }
+                } finally {
+                    setLoading(false);
+                }
+            }, [config.sheetName, config.spreadsheetId, isAuthenticated]);
 
-            if (configError) {
-                return (
-                    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
-                        <div className="space-y-4 text-center max-w-md px-6">
-                            <div className="text-sm uppercase tracking-[0.4em] text-rose-500">Configuration Error</div>
-                            <div className="text-lg font-semibold text-slate-200">{configError}</div>
-                            <p className="text-sm text-slate-400">
-                                Ensure `config.json` exists with valid Google credentials, then refresh the page.
-                            </p>
-                        </div>
-                    </div>
-                );
-            }
+            const ensureCoworkerSheetExists = useCallback(async () => {
+                if (!config.spreadsheetId || !isAuthenticated) return null;
+                if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                    throw new Error('Google Sheets client is not ready yet. Try reconnecting Google Sheets.');
+                }
 
+                const cache = coworkerSheetMetaRef.current || { ensured: false, sheetId: null };
+                if (cache.ensured) {
+                    return cache.sheetId ?? null;
+                }
+
+                try {
+                    const spreadsheet = await gapi.client.sheets.spreadsheets.get({
+                        spreadsheetId: config.spreadsheetId,
+                        includeGridData: false,
+                    });
+                    const existing = spreadsheet.result?.sheets?.find(
+                        (sheet) => sheet.properties?.title === COWORKER_SHEET_NAME
+                    );
+                    if (existing) {
+                        const sheetId = existing.properties?.sheetId ?? null;
+                        coworkerSheetMetaRef.current = { ensured: true, sheetId };
+                        return sheetId;
+                    }
+                } catch (error) {
+                    throw new Error(getSheetsErrorMessage(error, 'Unable to inspect spreadsheet for coworker tab.'));
+                }
+
+                try {
+                    const addResponse = await gapi.client.sheets.spreadsheets.batchUpdate({
+                        spreadsheetId: config.spreadsheetId,
+                        resource: {
+                            requests: [
+                                {
+                                    addSheet: {
+                                        properties: {
+                                            title: COWORKER_SHEET_NAME,
+                                            tabColor: { red: 0.129, green: 0.231, blue: 0.541 },
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    });
+                    const newSheetId =
+                        addResponse.result?.replies?.[0]?.addSheet?.properties?.sheetId ?? null;
+                    await gapi.client.sheets.spreadsheets.values.update({
+                        spreadsheetId: config.spreadsheetId,
+                        range: `${COWORKER_SHEET_NAME}!A1:F1`,
+                        valueInputOption: 'RAW',
+                        resource: {
+                            values: [['ID', 'Name', 'First', 'Last', 'Positions', 'Manager']],
+                        },
+                    });
+                    coworkerSheetMetaRef.current = { ensured: true, sheetId: newSheetId };
+                    return newSheetId;
+                } catch (error) {
+                    coworkerSheetMetaRef.current = { ensured: false, sheetId: null };
+                    throw new Error(getSheetsErrorMessage(error, 'Unable to create Coworkers sheet.'));
+                }
+            }, [config.spreadsheetId, isAuthenticated]);
+
+            const loadCoworkerDirectory = useCallback(async () => {
+                if (!config.spreadsheetId || !isAuthenticated) return;
+                try {
+                    await ensureCoworkerSheetExists();
+                    const rows = await sheetsAPI.readData(config.spreadsheetId, `${COWORKER_SHEET_NAME}!A2:F`);
+                    const directory = (rows || [])
+                        .map((row, index) => {
+                            const [
+                                trappeId = '',
+                                name = '',
+                                firstName = '',
+                                lastName = '',
+                                positionsRaw = '',
+                                managerRaw = '',
+                            ] = row || [];
+                            const rowIndex = index + 2;
+                            const fallbackName = [firstName, lastName].filter(Boolean).join(' ');
+                            const normalizedName = (name || fallbackName || '').trim();
+                            if (!normalizedName) return null;
+                            const positions = (positionsRaw || '')
+                                .split(/[,/]/)
+                                .map((token) => token.trim())
+                                .filter(Boolean);
+                            const positionsNormalized = positions.map((p) => p.toLowerCase());
+                            const managerFlag = String(managerRaw || '').trim().toLowerCase();
+                            const isManager = managerFlag === 'true' || managerFlag === 'yes' || managerFlag === '1';
+                            const isSelf =
+                                normalizedName.toLowerCase() === 'ian' ||
+                                (firstName || '').trim().toLowerCase() === 'ian';
+                            return {
+                                rowIndex,
+                                id: trappeId || `coworker_${index}`,
+                                name: normalizedName,
+                                firstName: firstName || '',
+                                lastName: lastName || '',
+                                positions,
+                                positionsNormalized,
+                                isManager,
+                                isSelf,
+                            };
+                        })
+                        .filter(Boolean);
+                    setCoworkerDirectory(directory);
+                    setError((prev) =>
+                        prev && prev.toLowerCase().includes('coworker') ? null : prev
+                    );
+                } catch (directoryError) {
+                    console.warn('Failed to load coworker directory', directoryError);
+                    setCoworkerDirectory([]);
+                    setError(getSheetsErrorMessage(directoryError, 'Failed to load coworker directory.'));
+                }
+            }, [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated]);
+
+            const coworkerRowRange = (rowIndex) => `${COWORKER_SHEET_NAME}!A${rowIndex}:F${rowIndex}`;
+
+            const formatCoworkerForSheet = (draft) => {
+                if (!draft) return null;
+                const firstName = (draft.firstName || '').trim();
+                const lastName = (draft.lastName || '').trim();
+                const displayName = (draft.name || `${firstName} ${lastName}` || '').trim();
+                const positions = Array.isArray(draft.positions)
+                    ? draft.positions.filter(Boolean)
+                    : [];
+                return {
+                    rowIndex: draft.rowIndex || null,
+                    id: (draft.id || '').trim(),
+                    name: displayName,
+                    firstName,
+                    lastName,
+                    positions,
+                    isManager: !!draft.isManager,
+                };
+            };
+
+            const upsertCoworkerRecord = useCallback(
+                async (draft) => {
+                    if (!config.spreadsheetId || !isAuthenticated) {
+                        throw new Error('Connect Google Sheets to manage coworkers.');
+                    }
+                    if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                        throw new Error('Google Sheets client is not ready yet.');
+                    }
+                    await ensureCoworkerSheetExists();
+
+                    const payload = formatCoworkerForSheet(draft);
+                    if (!payload) {
+                        throw new Error('Invalid coworker details.');
+                    }
+                    if (!payload.name) {
+                        throw new Error('Name is required.');
+                    }
+                    const positionsValue = payload.positions.join(', ');
+                    const rowValues = [
+                        payload.id,
+                        payload.name,
+                        payload.firstName,
+                        payload.lastName,
+                        positionsValue,
+                        payload.isManager ? 'TRUE' : '',
+                    ];
+
+                    try {
+                        if (payload.rowIndex) {
+                            await gapi.client.sheets.spreadsheets.values.update({
+                                spreadsheetId: config.spreadsheetId,
+                                range: coworkerRowRange(payload.rowIndex),
+                                valueInputOption: 'RAW',
+                                resource: {
+                                    values: [rowValues],
+                                },
+                            });
+                        } else {
+                            await gapi.client.sheets.spreadsheets.values.append({
+                                spreadsheetId: config.spreadsheetId,
+                                range: `${COWORKER_SHEET_NAME}!A:F`,
+                                valueInputOption: 'RAW',
+                                insertDataOption: 'INSERT_ROWS',
+                                resource: {
+                                    values: [rowValues],
+                                },
+                            });
+                        }
+                    } catch (error) {
+                        throw new Error(getSheetsErrorMessage(error, 'Unable to save coworker.'));
+                    }
+
+                    await loadCoworkerDirectory();
+                    return payload;
+                },
+                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
+            );
+
+            const deleteCoworkerRecord = useCallback(
+                async (record) => {
+                    if (!config.spreadsheetId || !isAuthenticated) {
+                        throw new Error('Connect Google Sheets to manage coworkers.');
+                    }
+                    if (typeof gapi === 'undefined' || !gapi?.client?.sheets) {
+                        throw new Error('Google Sheets client is not ready yet.');
+                    }
+                    if (!record?.rowIndex) {
+                        throw new Error('Missing row information for coworker.');
+                    }
+
+                    await ensureCoworkerSheetExists();
+
+                    try {
+                        await gapi.client.sheets.spreadsheets.values.update({
+                            spreadsheetId: config.spreadsheetId,
+                            range: coworkerRowRange(record.rowIndex),
+                            valueInputOption: 'RAW',
+                            resource: {
+                                values: [['', '', '', '', '', '']],
+                            },
+                        });
+                    } catch (error) {
+                        throw new Error(getSheetsErrorMessage(error, 'Unable to delete coworker.'));
+                    }
+
+                    await loadCoworkerDirectory();
+                },
+                [config.spreadsheetId, ensureCoworkerSheetExists, isAuthenticated, loadCoworkerDirectory]
+            );
+
+            const syncingRef = useRef(false);
+
+            const syncPendingShifts = useCallback(async () => {
+                if (syncingRef.current) return;
+                if (!config.spreadsheetId || !isAuthenticated || !isOnline()) return;
+                const queue = loadPendingQueue();
+                if (!queue.length) return;
+                syncingRef.current = true;
+
+                const sheetName = config.sheetName || 'Shifts';
+                const updates = [];
+                const clears = [];
+                const inserts = [];
+
+                queue.forEach((op) => {
+                    if (op.type === 'delete') {
+                        if (op.rowIndex) {
+                            clears.push(op);
+                        }
+                    } else if (op.type === 'upsert') {
+                        if (op.rowIndex) {
+                            updates.push(op);
+                        } else {
+                            inserts.push(op);
+                        }
+                    }
+                });
+
+                try {
+                    const dataRequests = [];
+                    updates.forEach((op) => {
+                        dataRequests.push({
+                            range: `${sheetName}!A${op.rowIndex}:F${op.rowIndex}`,
+                            values: [serializeShiftForRow(op.shift)],
+                        });
+                    });
+                    clears.forEach((op) => {
+                        dataRequests.push({
+                            range: `${sheetName}!A${op.rowIndex}:F${op.rowIndex}`,
+                            values: [['', '', '', '', '', '']],
+                        });
+                    });
+
+                    if (dataRequests.length) {
+                        await gapi.client.sheets.spreadsheets.values.batchUpdate({
+                            spreadsheetId: config.spreadsheetId,
+                            resource: {
+                                valueInputOption: 'USER_ENTERED',
+                                data: dataRequests,
+                            },
+                        });
+                    }
+
+                    if (inserts.length) {
+                        const insertValues = inserts.map((op) => serializeShiftForRow(op.shift));
+                        await gapi.client.sheets.spreadsheets.values.append({
+                            spreadsheetId: config.spreadsheetId,
+                            range: `${sheetName}!A:F`,
+                            valueInputOption: 'USER_ENTERED',
+                            insertDataOption: 'INSERT_ROWS',
+                            resource: {
+                                values: insertValues,
+                            },
+                        });
+                    }
+
+                    storePendingQueue([]);
+                    await loadShifts();
+                } catch (error) {
+                    console.warn('Failed to sync pending shifts', error);
+                    setError('Unable to sync pending changes. They will retry when you are back online.');
+                } finally {
+                    syncingRef.current = false;
+                }
+            }, [config.sheetName, config.spreadsheetId, isAuthenticated, loadShifts]);
+
+            useEffect(() => {
+                if (!isAuthenticated || !config.spreadsheetId) return;
+                loadShifts();
+            }, [isAuthenticated, config.spreadsheetId, loadShifts]);
+
+            useEffect(() => {
+                if (!isAuthenticated || !config.spreadsheetId) return;
+                loadCoworkerDirectory();
+            }, [isAuthenticated, config.spreadsheetId, loadCoworkerDirectory]);
+
+            useEffect(() => {
+                syncPendingShifts();
+            }, [syncPendingShifts]);
+
+            useEffect(() => {
+                const handleOnline = () => {
+                    syncPendingShifts();
+                    refreshToken('silent');
+                };
+                window.addEventListener('online', handleOnline);
+                return () => {
+                    window.removeEventListener('online', handleOnline);
+                };
+            }, [syncPendingShifts, refreshToken]);
+
+            const saveShift = async (shiftData) => {
+                const normalized = normalizeShiftPayload(shiftData) || shiftData;
+                const rowIndex = estimateRowIndex(shifts, normalized.id);
+                const queue = loadPendingQueue();
+                queue.push({
+                    type: 'upsert',
+                    id: normalized.id,
+                    shift: normalized,
+                    rowIndex,
+                    timestamp: Date.now(),
+                });
+                storePendingQueue(queue);
+
+                const nextRecords = applyLocalShift(shifts, {
+                    rowIndex: rowIndex || null,
+                    id: normalized.id,
+                    data: normalized,
+                });
+                setShifts(nextRecords);
+                storeCachedShifts(nextRecords);
+                setView(VIEW_MODES.DASHBOARD);
+
+                if (!config.spreadsheetId || !isAuthenticated) return;
+
+                setLoading(true);
+                setError(null);
+                try {
+                    await syncPendingShifts();
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const deleteShift = async (shiftId) => {
+                if (!confirm('Are you sure you want to delete this shift?')) return;
+                
+                const rowIndex = estimateRowIndex(shifts, shiftId);
+                const queue = loadPendingQueue();
+                queue.push({
+                    type: 'delete',
+                    id: shiftId,
+                    rowIndex,
+                    timestamp: Date.now(),
+                });
+                storePendingQueue(queue);
+
+                const nextRecords = removeLocalShift(shifts, shiftId);
+                setShifts(nextRecords);
+                storeCachedShifts(nextRecords);
+
+                if (!config.spreadsheetId || !isAuthenticated) return;
+
+                setLoading(true);
+                setError(null);
+                try {
+                    await syncPendingShifts();
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const startNewShift = useCallback(
+                (seed = {}) => {
+                    const normalizedSeed = normalizeShiftPayload(seed) || seed;
+                    const draft = deepMergeShift(DEFAULT_SHIFT_TEMPLATE, normalizedSeed);
+                    setCurrentShift(draft);
+                    setView(VIEW_MODES.SHIFT_CREATE);
+                },
+                []
+            );
+
+            const startNewShiftForDate = useCallback(
+                (dateKey) => {
+                    if (!dateKey) {
+                        startNewShift();
+                        return;
+                    }
+                    startNewShift({ date: dateKey });
+                },
+                [startNewShift]
+            );
+
+            const editShift = (shift) => {
+                setCurrentShift(shift.data);
+                setView(VIEW_MODES.SHIFT_EDIT);
+            };
+
+            const viewShift = (shift) => {
+                setCurrentShift(shift.data);
+                setView(VIEW_MODES.SHIFT_VIEW);
+            };
 
             const navItems = [
                 { key: VIEW_MODES.DASHBOARD, label: 'Dashboard', icon: 'fa-chart-line' },
-                { key: VIEW_MODES.SHIFT_CREATE, label: 'Shift Entry', icon: 'fa-pen-to-square' },
+                { key: 'shift-new', label: 'Shift Entry', icon: 'fa-pen-to-square' },
                 { key: VIEW_MODES.COWORKERS, label: 'Crew Database', icon: 'fa-users' },
             ];
 
             const activeNavKey = (() => {
                 if (view === VIEW_MODES.COWORKERS) return VIEW_MODES.COWORKERS;
-                if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT || view === VIEW_MODES.SHIFT_VIEW) {
-                    return VIEW_MODES.SHIFT_CREATE;
-                }
+                if (view === VIEW_MODES.SHIFT_CREATE || view === VIEW_MODES.SHIFT_EDIT) return 'shift-new';
+                if (view === VIEW_MODES.SHIFT_VIEW) return VIEW_MODES.DASHBOARD;
                 return VIEW_MODES.DASHBOARD;
             })();
 
             const handleNavSelect = (key) => {
-                if (key === VIEW_MODES.SHIFT_CREATE) {
+                if (key === 'shift-new') {
                     startNewShift({ date: new Date().toISOString().split('T')[0] });
+                    return;
+                }
+                if (key === VIEW_MODES.DASHBOARD) {
+                    setView(VIEW_MODES.DASHBOARD);
                     return;
                 }
                 if (key === VIEW_MODES.COWORKERS) {
                     setCurrentShift(null);
+                    setView(VIEW_MODES.COWORKERS);
                 }
-                setView(key);
-            };
-
-            const ShiftEntryRoute = ({ mode }) => {
-                const { shiftId } = useParams();
-
-                useEffect(() => {
-                    if (mode === VIEW_MODES.SHIFT_CREATE) {
-                        if (!currentShift) {
-                            createShiftDraft({ date: new Date().toISOString().split('T')[0] });
-                        }
-                        return;
-                    }
-
-                    if (!shiftId) {
-                        setView(VIEW_MODES.DASHBOARD);
-                        return;
-                    }
-
-                    const match = getShiftById(shiftId);
-                    if (match) {
-                        setCurrentShift(match.data);
-                    } else if (!loading) {
-                        loadShifts();
-                    }
-                }, [mode, shiftId, currentShift, createShiftDraft, getShiftById, loading, loadShifts, setCurrentShift, setView]);
-
-                if (mode !== VIEW_MODES.SHIFT_CREATE) {
-                    if (!shiftId || !currentShift || currentShift.id !== shiftId) {
-                        return null;
-                    }
-                }
-
-                if (!currentShift) {
-                    return null;
-                }
-
-                return (
-                    <ShiftEntryPage
-                        mode={mode === VIEW_MODES.SHIFT_VIEW ? 'view' : mode === VIEW_MODES.SHIFT_EDIT ? 'edit' : 'create'}
-                        shift={currentShift}
-                        onSave={saveShift}
-                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
-                        onEdit={() => setView(VIEW_MODES.SHIFT_EDIT, { shiftId })}
-                        coworkerDirectory={coworkerDirectory}
-                    />
-                );
             };
 
             return (
@@ -711,63 +946,57 @@ function serializeShiftForRow(shift) {
                         )}
 
                         {/* Main Content */}
-                          {!showConfig && isAuthenticated && (
-                              <Routes>
-                                  <Route
-                                      path="/"
-                                      element={
-                                          <DashboardPage
-                                              shifts={shifts}
-                                              loading={loading}
-                                              onRefresh={loadShifts}
-                                              onEditShift={editShift}
-                                              onDeleteShift={deleteShift}
-                                              onViewShift={viewShift}
-                                              onStartNewShift={startNewShiftForDate}
-                                          />
-                                      }
-                                  />
-                                  <Route
-                                      path="/shift/new"
-                                      element={<ShiftEntryRoute mode={VIEW_MODES.SHIFT_CREATE} />}
-                                  />
-                                  <Route
-                                      path="/shift/:shiftId/edit"
-                                      element={<ShiftEntryRoute mode={VIEW_MODES.SHIFT_EDIT} />}
-                                  />
-                                  <Route
-                                      path="/shift/:shiftId/view"
-                                      element={<ShiftEntryRoute mode={VIEW_MODES.SHIFT_VIEW} />}
-                                  />
-                                  <Route
-                                      path="/crew"
-                                      element={
-                                          <CrewDatabasePage
-                                              records={coworkerDirectory}
-                                              onCreate={upsertCoworkerRecord}
-                                              onUpdate={upsertCoworkerRecord}
-                                              onDelete={deleteCoworkerRecord}
-                                              onRefresh={loadCoworkerDirectory}
-                                              positions={CREW_POSITION_OPTIONS}
-                                          />
-                                      }
-                                  />
-                                  <Route
-                                      path="*"
-                                      element={
-                                          <DashboardPage
-                                              shifts={shifts}
-                                              loading={loading}
-                                              onRefresh={loadShifts}
-                                              onEditShift={editShift}
-                                              onDeleteShift={deleteShift}
-                                              onViewShift={viewShift}
-                                              onStartNewShift={startNewShiftForDate}
-                                          />
-                                      }
-                                  />
-                              </Routes>
-                          )}
+                        {!showConfig && isAuthenticated && (
+                            <>
+                                {view === VIEW_MODES.DASHBOARD && (
+                                    <div className="space-y-6">
+                                        <ShiftList
+                                            shifts={shifts}
+                                            onEdit={editShift}
+                                            onDelete={deleteShift}
+                                            onView={viewShift}
+                                            onStartNew={startNewShiftForDate}
+                                            loading={loading}
+                                            onRefresh={loadShifts}
+                                        />
+                                        <ChartsPanel shifts={shifts} />
+                                    </div>
+                                )}
+                                {view === VIEW_MODES.SHIFT_CREATE && (
+                                    <ShiftForm
+                                        shift={currentShift}
+                                        onSave={saveShift}
+                                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
+                                        coworkerDirectory={coworkerDirectory}
+                                    />
+                                )}
+                                {view === VIEW_MODES.SHIFT_EDIT && currentShift && (
+                                    <ShiftForm
+                                        shift={currentShift}
+                                        onSave={saveShift}
+                                        onCancel={() => setView(VIEW_MODES.DASHBOARD)}
+                                        coworkerDirectory={coworkerDirectory}
+                                    />
+                                )}
+                                {view === VIEW_MODES.SHIFT_VIEW && currentShift && (
+                                    <ShiftDetail
+                                        shift={currentShift}
+                                        onEdit={() => setView(VIEW_MODES.SHIFT_EDIT)}
+                                        onClose={() => setView(VIEW_MODES.DASHBOARD)}
+                                    />
+                                )}
+                                  {view === VIEW_MODES.COWORKERS && (
+                                      <CrewDatabasePage
+                                          records={coworkerDirectory}
+                                          onCreate={upsertCoworkerRecord}
+                                          onUpdate={upsertCoworkerRecord}
+                                          onDelete={deleteCoworkerRecord}
+                                          onRefresh={loadCoworkerDirectory}
+                                          positions={CREW_POSITION_OPTIONS}
+                                      />
+                                  )}
+                            </>
+                        )}
 
                         {/* Not Authenticated */}
                         {!showConfig && !isAuthenticated && (
@@ -988,409 +1217,6 @@ function serializeShiftForRow(shift) {
                                 <li>Copy the Spreadsheet ID from the URL</li>
                             </ol>
                         </div>
-                    </div>
-                </div>
-            );
-        }
-
-        function CoworkerDatabase({ records = [], onCreate, onUpdate, onDelete, onRefresh, positions = [] }) {
-            const [filter, setFilter] = useState('');
-            const [editingKey, setEditingKey] = useState(null);
-            const [draft, setDraft] = useState({
-                rowIndex: null,
-                id: '',
-                name: '',
-                firstName: '',
-                lastName: '',
-                positions: [],
-                isManager: false,
-            });
-            const [saving, setSaving] = useState(false);
-            const [message, setMessage] = useState(null);
-
-            const resetDraft = () => {
-                setEditingKey(null);
-                setDraft({
-                    rowIndex: null,
-                    id: '',
-                    name: '',
-                    firstName: '',
-                    lastName: '',
-                    positions: [],
-                    isManager: false,
-                });
-            };
-
-            const sortedRecords = useMemo(() => {
-                const list = Array.isArray(records) ? [...records] : [];
-                list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-                return list;
-            }, [records]);
-
-            const filteredRecords = useMemo(() => {
-                if (!filter) return sortedRecords;
-                const search = filter.trim().toLowerCase();
-                if (!search) return sortedRecords;
-                return sortedRecords.filter((record) => {
-                    const tokens = [
-                        record.id,
-                        record.name,
-                        record.firstName,
-                        record.lastName,
-                        ...(record.positions || []),
-                    ]
-                        .filter(Boolean)
-                        .map((value) => String(value).toLowerCase());
-                    return tokens.some((token) => token.includes(search));
-                });
-            }, [sortedRecords, filter]);
-
-            const positionsList = positions.length ? positions : CREW_POSITION_OPTIONS;
-
-            const handleStartCreate = () => {
-                setMessage(null);
-                setEditingKey('new');
-                setDraft({
-                    rowIndex: null,
-                    id: '',
-                    name: '',
-                    firstName: '',
-                    lastName: '',
-                    positions: [],
-                    isManager: false,
-                });
-            };
-
-            const handleStartEdit = (record) => {
-                setMessage(null);
-                setEditingKey(record.id || `row-${record.rowIndex}`);
-                setDraft({
-                    rowIndex: record.rowIndex || null,
-                    id: record.id || '',
-                    name: record.name || '',
-                    firstName: record.firstName || '',
-                    lastName: record.lastName || '',
-                    positions: Array.isArray(record.positions) ? [...record.positions] : [],
-                    isManager: !!record.isManager,
-                });
-            };
-
-            const handleDraftChange = (field, value) => {
-                setDraft((prev) => ({
-                    ...prev,
-                    [field]: value,
-                }));
-            };
-
-            const togglePosition = (position) => {
-                setDraft((prev) => {
-                    const current = Array.isArray(prev.positions) ? prev.positions : [];
-                    const exists = current.includes(position);
-                    return {
-                        ...prev,
-                        positions: exists ? current.filter((item) => item !== position) : [...current, position],
-                    };
-                });
-            };
-
-            const handleCancel = () => {
-                resetDraft();
-            };
-
-            const handleSubmit = async () => {
-                if (!editingKey) return;
-                setSaving(true);
-                setMessage(null);
-                try {
-                    const payload = { ...draft, positions: Array.from(new Set(draft.positions || [])) };
-                    if (editingKey === 'new') {
-                        await onCreate?.(payload);
-                        setMessage({ type: 'success', text: 'Coworker added.' });
-                    } else {
-                        await onUpdate?.(payload);
-                        setMessage({ type: 'success', text: 'Coworker updated.' });
-                    }
-                    resetDraft();
-                } catch (error) {
-                    setMessage({ type: 'error', text: error?.message || 'Unable to save coworker.' });
-                } finally {
-                    setSaving(false);
-                }
-            };
-
-            const handleDelete = async (record) => {
-                if (!onDelete) return;
-                if (!confirm(`Remove ${record.name || 'this coworker'} from the directory?`)) return;
-                setSaving(true);
-                setMessage(null);
-                try {
-                    await onDelete(record);
-                    setMessage({ type: 'success', text: 'Coworker removed.' });
-                    if (editingKey && (editingKey === record.id || editingKey === `row-${record.rowIndex}`)) {
-                        resetDraft();
-                    }
-                } catch (error) {
-                    setMessage({ type: 'error', text: error?.message || 'Unable to delete coworker.' });
-                } finally {
-                    setSaving(false);
-                }
-            };
-
-            const renderPositionsBadges = (record) => {
-                const list = Array.isArray(record.positions) ? record.positions : [];
-                if (!list.length) {
-                    return <span className="text-xs text-slate-500">—</span>;
-                }
-                return (
-                    <div className="flex flex-wrap gap-2">
-                        {list.map((pos) => (
-                            <span
-                                key={pos}
-                                className="badge-pill bg-slate-800 text-slate-200 border border-slate-700"
-                            >
-                                {pos}
-                            </span>
-                        ))}
-                    </div>
-                );
-            };
-
-            const renderEditRow = (isNew) => (
-                <tr className="glass border border-slate-800/60">
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.id}
-                            onChange={(e) => handleDraftChange('id', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="ID (optional)"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.name}
-                            onChange={(e) => handleDraftChange('name', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="Display name"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.firstName}
-                            onChange={(e) => handleDraftChange('firstName', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="First"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <input
-                            type="text"
-                            value={draft.lastName}
-                            onChange={(e) => handleDraftChange('lastName', e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="Last"
-                            disabled={saving}
-                        />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <div className="flex flex-wrap gap-2">
-                            {positionsList.map((pos) => {
-                                const active = draft.positions.includes(pos);
-                                return (
-                                    <button
-                                        type="button"
-                                        key={pos}
-                                        onClick={() => togglePosition(pos)}
-                                        disabled={saving}
-                                        className={`text-xs px-3 py-1.5 rounded-full border transition ${
-                                            active
-                                                ? 'bg-cyan-500/30 border-cyan-400/60 text-cyan-100'
-                                                : 'bg-slate-900/70 border-slate-700 text-slate-300 hover:border-cyan-400/60 hover:text-cyan-100'
-                                        }`}
-                                    >
-                                        {pos}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </td>
-                    <td className="px-3 py-3 align-top text-center">
-                        <label className="inline-flex items-center gap-2 text-xs text-slate-300">
-                            <input
-                                type="checkbox"
-                                checked={draft.isManager}
-                                onChange={(e) => handleDraftChange('isManager', e.target.checked)}
-                                className="accent-cyan-500"
-                                disabled={saving}
-                            />
-                            Manager
-                        </label>
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                        <div className="flex flex-wrap gap-2 justify-end">
-                            <button
-                                type="button"
-                                onClick={handleSubmit}
-                                disabled={saving}
-                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-xs font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
-                            >
-                                {saving ? 'Saving...' : isNew ? 'Add' : 'Save'}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleCancel}
-                                disabled={saving}
-                                className="px-4 py-2 rounded-xl border border-slate-700 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-60"
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </td>
-                </tr>
-            );
-
-            return (
-                <div className="glass rounded-2xl shadow-xl p-6 border border-slate-800/40 animate-slide-in">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                        <div>
-                            <div className="flex items-center gap-2">
-                                <h2 className="text-2xl font-bold text-slate-100">Crew Database</h2>
-                                <span className="badge-pill bg-slate-800 text-slate-300 border border-slate-700">
-                                    {records.length} teammates
-                                </span>
-                            </div>
-                            <p className="text-sm text-slate-400 mt-1">
-                                Manage the roster synced to the <code>Coworkers</code> sheet. This tab will be created automatically if it is missing.
-                            </p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                            <button
-                                type="button"
-                                onClick={onRefresh}
-                                className="px-4 py-2 rounded-xl border border-slate-700 text-slate-200 hover:border-cyan-500/60 transition text-sm"
-                                disabled={saving}
-                            >
-                                <i className="fas fa-rotate mr-2"></i>
-                                Refresh
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleStartCreate}
-                                className="bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:shadow-lg hover:shadow-cyan-500/30 transition disabled:opacity-60"
-                                disabled={saving}
-                            >
-                                <i className="fas fa-user-plus mr-2"></i>
-                                Add Coworker
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="mt-6">
-                        <input
-                            type="search"
-                            value={filter}
-                            onChange={(e) => setFilter(e.target.value)}
-                            className="w-full px-4 py-2.5 bg-slate-900/70 border border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                            placeholder="Search by name, position, or ID..."
-                            disabled={saving && !editingKey}
-                        />
-                    </div>
-
-                    {message && (
-                        <div
-                            className={`mt-4 rounded-xl px-4 py-3 text-sm border ${
-                                message.type === 'success'
-                                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                                    : 'border-rose-500/40 bg-rose-500/10 text-rose-200'
-                            }`}
-                        >
-                            {message.text}
-                        </div>
-                    )}
-
-                    <div className="mt-6 overflow-x-auto">
-                        <table className="min-w-full text-sm">
-                            <thead>
-                                <tr className="text-left text-slate-400 uppercase text-xs tracking-widest">
-                                    <th className="px-3 py-2 font-medium">ID</th>
-                                    <th className="px-3 py-2 font-medium">Display Name</th>
-                                    <th className="px-3 py-2 font-medium">First</th>
-                                    <th className="px-3 py-2 font-medium">Last</th>
-                                    <th className="px-3 py-2 font-medium">Positions</th>
-                                    <th className="px-3 py-2 font-medium text-center">Manager</th>
-                                    <th className="px-3 py-2 font-medium text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-800/40">
-                                {editingKey === 'new' && renderEditRow(true)}
-                                {filteredRecords.map((record) => {
-                                    const key = record.id || `row-${record.rowIndex}`;
-                                    const isEditing = editingKey === key;
-                                    if (isEditing) {
-                                        return (
-                                            <React.Fragment key={key}>
-                                                {renderEditRow(false)}
-                                            </React.Fragment>
-                                        );
-                                    }
-                                    return (
-                                        <tr key={key} className="hover:bg-slate-900/40 transition">
-                                            <td className="px-3 py-3 text-slate-300">{record.id || <span className="text-xs text-slate-500">—</span>}</td>
-                                            <td className="px-3 py-3 text-slate-100 font-medium flex items-center gap-2">
-                                                {record.name || <span className="text-xs text-slate-500">Unnamed</span>}
-                                                {record.isSelf && (
-                                                    <span className="badge-pill bg-cyan-500/30 text-cyan-100 border border-cyan-400/40">You</span>
-                                                )}
-                                            </td>
-                                            <td className="px-3 py-3 text-slate-300">{record.firstName || <span className="text-xs text-slate-500">—</span>}</td>
-                                            <td className="px-3 py-3 text-slate-300">{record.lastName || <span className="text-xs text-slate-500">—</span>}</td>
-                                            <td className="px-3 py-3">{renderPositionsBadges(record)}</td>
-                                            <td className="px-3 py-3 text-center">
-                                                {record.isManager ? (
-                                                    <span className="badge-pill bg-amber-500/20 text-amber-100 border border-amber-400/40">Manager</span>
-                                                ) : (
-                                                    <span className="text-xs text-slate-500">—</span>
-                                                )}
-                                            </td>
-                                            <td className="px-3 py-3">
-                                                <div className="flex items-center justify-end gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleStartEdit(record)}
-                                                        className="px-3 py-2 rounded-xl border border-slate-700 text-xs text-slate-200 hover:border-cyan-500/50 hover:text-cyan-100 transition"
-                                                        disabled={saving}
-                                                    >
-                                                        <i className="fas fa-pen mr-2"></i>
-                                                        Edit
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleDelete(record)}
-                                                        className="px-3 py-2 rounded-xl border border-rose-500/40 text-xs text-rose-200 hover:bg-rose-500/20 transition"
-                                                        disabled={saving}
-                                                    >
-                                                        <i className="fas fa-trash mr-2"></i>
-                                                        Delete
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                                {!filteredRecords.length && editingKey !== 'new' && (
-                                    <tr>
-                                        <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
-                                            No coworkers match your search.
-                                        </td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
                     </div>
                 </div>
             );
@@ -5953,4 +5779,61 @@ function serializeShiftForRow(shift) {
                 </div>
             );
         }
-export default App;
+
+const ShiftEntryPage = ({
+    mode = 'create',
+    shift,
+    onSave,
+    onCancel,
+    onEdit,
+    coworkerDirectory = [],
+}) => {
+    if (mode === 'view') {
+        return <ShiftDetail shift={shift} onEdit={onEdit} onClose={onCancel} />;
+    }
+
+    return (
+        <ShiftForm
+            shift={shift}
+            onSave={onSave}
+            onCancel={onCancel}
+            coworkerDirectory={coworkerDirectory}
+        />
+    );
+};
+
+export {
+    serializeShiftForRow,
+    deserializeShiftRow,
+    applyLocalShift,
+    removeLocalShift,
+    estimateRowIndex,
+    DEFAULT_SHIFT_TEMPLATE,
+    deepMergeShift,
+    setNestedValue,
+    getNestedValue,
+    buildInitialTimeDrafts,
+    calculateHoursBetween,
+    timeStringToMinutes,
+    normalizeMinutesDiff,
+    formatTimeDisplay,
+    parseFlexibleTime,
+    inferShiftTypeFromTimes,
+    ensureCutSkeleton,
+    sanitizeBartenderEntry,
+    sanitizeServerEntry,
+    sanitizeSupportEntry,
+    sanitizeChumpPlayer,
+    normalizeCrewData,
+    normalizeShiftPayload,
+    upsertSelfCrew,
+    SHIFT_TYPE_META,
+    SHIFT_FORM_PAGE_DEFS,
+    BARTENDER_LOCATION_OPTIONS,
+    SUPPORT_ROLE_OPTIONS,
+    BARTENDER_STATUS_OPTIONS,
+    ShiftForm,
+    ShiftDetail,
+};
+
+export default ShiftEntryPage;
